@@ -1,3 +1,4 @@
+
 # Logs
 logs
 *.log
@@ -137,3 +138,27 @@ dist
 # Vite logs files
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+=======
+# Byte-compiled Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtuální prostředí
+venv/
+env/
+.venv/
+
+# Konfigurace a citlivé údaje
+.env
+instance/
+
+# Databáze
+*.sqlite3
+
+# Flask-Migrate
+migrations/
+
+# Logy a runtime
+*.log
+>>>>>>> fe165ec (Initial commit – back-end)

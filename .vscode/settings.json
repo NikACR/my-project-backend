@@ -1,0 +1,14 @@
+{
+    "sqltools.connections": [
+        {
+            "previewLimit": 50,
+            "server": "db",
+            "port": 5432,
+            "name": "Template DB (Docker Backend)",
+            "driver": "PostgreSQL",
+            "database": "is_db",
+            "username": "admin",
+            "password": "heslo"
+        }
+    ]
+}
