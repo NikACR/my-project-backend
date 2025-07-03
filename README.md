@@ -1,6 +1,4 @@
-<<<<<<< HEAD
 # my-project-backend
-=======
 README – Backend pro Restauraci (Flask & Flask Smorest)
 Toto README je určeno všem vývojářům, kteří budou pracovat na backendové části REST API pro restauraci. Najdete zde popis struktury, klíčových souborů, konfigurace, způsob spuštění, migrací, testování i podrobnou analýzu kódu po jednotlivých modulech.
 
@@ -136,5 +134,3 @@ Dockerfile	Definice Docker image pro backend, nastavení prostředí
 requirements.txt	Přesný seznam Python balíčků s verzemi
 
 ________________________________________
-
->>>>>>> fe165ec (Initial commit – back-end)
