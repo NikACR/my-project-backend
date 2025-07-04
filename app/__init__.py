@@ -71,6 +71,16 @@ def create_app(config_name=None, config_override=None):
                 if user and user.check_password(dev_password):
                     token = create_access_token(identity=str(user.id_zakaznika))
                     request.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
+
+    # ─── SSE: umožnit JWT také z query param 'token' ─────────────────────────
+    @app.before_request
+    def _inject_token_from_query():
+        # pro event-streamy (SSE) bez hlavičky Authorization
+        # např. GET /api/events/objednavka/5?token=<jwt>
+        if request.path.startswith("/api/events") and not request.headers.get("Authorization"):
+            token = request.args.get("token")
+            if token:
+                request.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
     # ────────────────────────────────────────────────────────────────────────────
 
     # init API / Swagger UI
@@ -130,7 +140,6 @@ def create_app(config_name=None, config_override=None):
              "obrazek_url":None,"kategorie":"stálá nabídka","den":""},
         ]
         for itm in seed_items:
-            # zajistíme vždy ne-None
             itm.setdefault("kategorie", "stálá nabídka")
             itm.setdefault("den", "")
             if not db.session.query(PolozkaMenu).filter_by(nazev=itm["nazev"]).first():

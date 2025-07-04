@@ -199,21 +199,24 @@ class PodnikovaAkceCreateSchema(Schema):
 
 # — Objednávka —
 class ObjednavkaSchema(Schema):
-    id_objednavky = fields.Int(dump_only=True)
-    datum_cas = fields.DateTime()
-    stav = fields.Str()
-    celkova_castka = fields.Decimal(as_string=True)
-    zakaznik = fields.Nested(ZakaznikSummarySchema, dump_only=True)
-    polozky = fields.Nested(PolozkaObjednavkySummarySchema, many=True, dump_only=True)
-    platby = fields.Nested(PlatbaSummarySchema, many=True, dump_only=True)
-    hodnoceni = fields.Nested(HodnoceniSummarySchema, many=True, dump_only=True)
-    notifikace = fields.Nested(NotifikaceSummarySchema, many=True, dump_only=True)
+    id_objednavky   = fields.Int(dump_only=True)
+    datum_cas       = fields.DateTime()
+    stav            = fields.Str()
+    cas_pripravy    = fields.DateTime(dump_only=True)  # nově
+    body_ziskane    = fields.Int(dump_only=True)       # nově
+    celkova_castka  = fields.Decimal(as_string=True)
+    zakaznik        = fields.Nested(ZakaznikSummarySchema, dump_only=True)
+    polozky         = fields.Nested(PolozkaObjednavkySummarySchema, many=True, dump_only=True)
+    platby          = fields.Nested(PlatbaSummarySchema, many=True, dump_only=True)
+    hodnoceni       = fields.Nested(HodnoceniSummarySchema, many=True, dump_only=True)
+    notifikace      = fields.Nested(NotifikaceSummarySchema, many=True, dump_only=True)
+
 
 class ObjednavkaCreateSchema(Schema):
-    datum_cas = fields.DateTime(required=True)
-    stav = fields.Str()
-    celkova_castka = fields.Decimal(as_string=True)
-    id_zakaznika = fields.Int(required=True)
+    datum_cas       = fields.DateTime(required=True)
+    stav            = fields.Str()
+    celkova_castka  = fields.Decimal(as_string=True)
+    id_zakaznika    = fields.Int(required=True)
 
 # — Položka objednávky —
 class PolozkaObjednavkySchema(Schema):
@@ -364,3 +367,8 @@ class RoleSchema(Schema):
 
 class UserRoleAssignSchema(Schema):
     role_id = fields.Int(required=True)
+
+
+# — Pro uplatnění bodů —
+class RedeemSchema(Schema):
+    points = fields.Int(required=True)

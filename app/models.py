@@ -4,7 +4,7 @@ from .db import db                                    # db = SQLAlchemy instance
 from sqlalchemy import CheckConstraint                 # pro kontrolu podmínek na úrovni DB
 from werkzeug.security import generate_password_hash, check_password_hash  
                                                       # pro hashování a ověřování hesel
-from datetime import datetime                         # pro časové razítko blacklistu
+from datetime import datetime, date                         # pro časové razítko blacklistu
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PARAMETRY:
@@ -85,24 +85,30 @@ class VernostniUcet(db.Model):
     """
     Věrnostní účet:
     - vytvoří se automaticky při přidání Zakaznik (v routes.py)
-    - body   (int, default 0)
-    - datum_zalozeni (date, NOT NULL)
+    - body            (int, default 0)
+    - datum_zalozeni  (date, NOT NULL, default = dnes)
     - vztah 1:1 zpět na Zakaznik
     """
     __tablename__ = "vernostni_ucet"
+
     id_ucet        = db.Column(db.Integer, primary_key=True)
-    body           = db.Column(db.Integer, default=0, nullable=False)
-    datum_zalozeni = db.Column(db.Date,    nullable=False)
+    body           = db.Column(db.Integer, nullable=False, default=0)
+    datum_zalozeni = db.Column(db.Date,    nullable=False, default=date.today)
     id_zakaznika   = db.Column(
         db.Integer,
         db.ForeignKey("zakaznik.id_zakaznika", ondelete="CASCADE"),
         nullable=False
     )
 
-    zakaznik = db.relationship("Zakaznik", back_populates="ucet")
+    # uselist=False => 1:1 vztah
+    zakaznik = db.relationship("Zakaznik", back_populates="ucet", uselist=False)
 
     def __repr__(self):
-        return f"<VernostniUcet {self.id_ucet} body={self.body}>"
+        return (
+            f"<VernostniUcet id={self.id_ucet} "
+            f"body={self.body} "
+            f"zalozeno={self.datum_zalozeni.isoformat()}>"
+        )
 
 
 class Rezervace(db.Model):
@@ -194,25 +200,33 @@ class Objednavka(db.Model):
     - vztahy: PolozkaObjednavky, Platba, Hodnoceni, Notifikace
     """
     __tablename__ = "objednavka"
-    id_objednavky  = db.Column(db.Integer, primary_key=True)
-    datum_cas      = db.Column(db.DateTime, nullable=False)
-    stav           = db.Column(db.String(20), nullable=True)
-    celkova_castka = db.Column(db.Numeric(8, 2), nullable=True)
-    id_zakaznika   = db.Column(
-        db.Integer,
-        db.ForeignKey("zakaznik.id_zakaznika", ondelete="CASCADE"),
-        nullable=False
-    )
+
+    id_objednavky     = db.Column(db.Integer, primary_key=True)
+    datum_cas         = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    stav              = db.Column(
+                           db.String(20),
+                           nullable=False,
+                           default="PENDING"
+                       )
+    celkova_castka    = db.Column(db.Numeric(8, 2), nullable=True)
+    id_zakaznika      = db.Column(
+                           db.Integer,
+                           db.ForeignKey("zakaznik.id_zakaznika", ondelete="CASCADE"),
+                           nullable=False
+                       )
+
+    # nová pole s českými názvy
+    cas_pripravy     = db.Column(db.DateTime, nullable=True)
+    body_ziskane     = db.Column(db.Integer, nullable=False, default=0)
 
     zakaznik   = db.relationship("Zakaznik", back_populates="objednavky")
-    polozky    = db.relationship("PolozkaObjednavky",    back_populates="objednavka", lazy="dynamic")
-    platby     = db.relationship("Platba",                 back_populates="objednavka", lazy="dynamic")
-    hodnoceni  = db.relationship("Hodnoceni",              back_populates="objednavka", lazy="dynamic")
-    notifikace = db.relationship("Notifikace",             back_populates="objednavka", lazy="dynamic")
+    polozky    = db.relationship("PolozkaObjednavky", back_populates="objednavka", lazy="dynamic")
+    platby     = db.relationship("Platba", back_populates="objednavka", lazy="dynamic")
+    hodnoceni  = db.relationship("Hodnoceni", back_populates="objednavka", lazy="dynamic")
+    notifikace = db.relationship("Notifikace", back_populates="objednavka", lazy="dynamic")
 
     def __repr__(self):
         return f"<Objednavka {self.id_objednavky}>"
-
 
 class PolozkaObjednavky(db.Model):
     """

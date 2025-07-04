@@ -26,15 +26,20 @@ Principy a důležité body
 7. register_crud
    - Generuje CRUD endpointy automaticky.
 """
-
 from functools import wraps
 from flask.views import MethodView
 from flask_smorest import abort
-from flask import request
+from flask import request, Response
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
-from datetime import date
-from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
+from datetime import datetime, date
+from flask_jwt_extended import (
+    jwt_required,
+    get_jwt_identity,
+    get_jwt,
+    verify_jwt_in_request
+)
+import json, time
 
 from ..db import db
 from ..models import (
@@ -59,7 +64,8 @@ from ..schemas import (
     PolozkaJidelnihoPlanuSchema, PolozkaJidelnihoPlanuCreateSchema,
     AlergenSchema, AlergenCreateSchema,
     NotifikaceSchema, NotifikaceCreateSchema,
-    RezervaceSchema, RezervaceCreateSchema
+    RezervaceSchema, RezervaceCreateSchema,
+    RedeemSchema
 )
 from . import api_bp
 
@@ -169,7 +175,7 @@ class ZakaznikItem(MethodView):
         return ""
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 2) GENERICKÝ register_crud PRO OSTATNÍ ENTITY
+# 2) GENERICKÝ register_crud PRO OSTATNÍ ENTITY (kromě objednavka)
 # ──────────────────────────────────────────────────────────────────────────────
 def register_crud(
     route_base,
@@ -245,7 +251,7 @@ def register_crud(
             db.session.commit()
             return ""
 
-# CRUD pro základní modely
+# zaregistrujeme všechny entity kromě objednavka
 register_crud('ucet', VernostniUcet, VernostniUcetSchema, VernostniUcetCreateSchema, 'id_ucet')
 register_crud('stul', Stul, StulSchema, StulCreateSchema, 'id_stul', roles_list=('user','staff','admin'))
 register_crud('salonek', Salonek, SalonekSchema, SalonekCreateSchema, 'id_salonek',
@@ -260,7 +266,7 @@ register_crud('akce', PodnikovaAkce, PodnikovaAkceSchema, PodnikovaAkceCreateSch
               roles_item_get=('user','staff','admin'),
               roles_update=('user','staff','admin'),
               roles_delete=('user','staff','admin'))
-register_crud('objednavka', Objednavka, ObjednavkaSchema, ObjednavkaCreateSchema, 'id_objednavky')
+# <-- tady už **není** register_crud('objednavka', ...)
 register_crud('polozka-objednavky', PolozkaObjednavky, PolozkaObjednavkySchema, PolozkaObjednavkyCreateSchema, 'id_polozky_obj',
               roles_list=('user','staff','admin'),
               roles_create=('user','staff','admin'),
@@ -298,6 +304,58 @@ register_crud('alergen', Alergen, AlergenSchema, AlergenCreateSchema, 'id_alerge
               roles_item_get=('user','staff','admin'),
               roles_update=('user','staff','admin'),
               roles_delete=('user','staff','admin'))
+
+# ──────────────────────────────────────────────────────────────────────────────
+# VLASTNÍ ENDPOINT PRO OBJÉDNAVKU (s ID zákazníka z tokenu)
+# ──────────────────────────────────────────────────────────────────────────────
+@api_bp.route("/objednavka")
+class ObjednavkaCreate(MethodView):
+    @jwt_required()
+    @api_bp.arguments(ObjednavkaCreateSchema)
+    @api_bp.response(201, ObjednavkaSchema)
+    def post(self, new_data):
+        # přidáme id_zakaznika z přihlášeného JWT
+        new_data["id_zakaznika"] = int(get_jwt_identity())
+        objednavka = Objednavka(**new_data)
+        try:
+            db.session.add(objednavka)
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            abort(409, message="Duplicitní nebo neplatný záznam.")
+        return objednavka
+
+@api_bp.route("/objednavka/<int:id_objednavky>")
+class ObjednavkaItem(MethodView):
+    @jwt_required()
+    @api_bp.response(200, ObjednavkaSchema)
+    def get(self, id_objednavky):
+        obj = db.session.get(Objednavka, id_objednavky)
+        if not obj:
+            abort(404, message="Objednávka nenalezena.")
+        return obj
+
+    @jwt_required()
+    @api_bp.arguments(ObjednavkaCreateSchema(partial=True))
+    @api_bp.response(200, ObjednavkaSchema)
+    def put(self, data, id_objednavky):
+        obj = db.session.get(Objednavka, id_objednavky)
+        if not obj:
+            abort(404, message="Objednávka nenalezena.")
+        for k, v in data.items():
+            setattr(obj, k, v)
+        db.session.commit()
+        return obj
+
+    @jwt_required()
+    @api_bp.response(204)
+    def delete(self, id_objednavky):
+        obj = db.session.get(Objednavka, id_objednavky)
+        if not obj:
+            abort(404, message="Objednávka nenalezena.")
+        db.session.delete(obj)
+        db.session.commit()
+        return ""
 
 # ──────────────────────────────────────────────────────────────────────────────
 # VLASTNÍ ENDPOINTY PRO MENU
@@ -384,7 +442,6 @@ class MealPlansList(MethodView):
     @jwt_required()
     @api_bp.response(200, JidelniPlanSchema(many=True))
     def get(self):
-        """Vrátí všechny jídelní plány platné k dnešnímu dni."""
         today = date.today()
         stmt = (
             db.select(JidelniPlan)
@@ -401,7 +458,6 @@ class MealPlanItem(MethodView):
     @jwt_required()
     @api_bp.response(200, JidelniPlanSchema)
     def get(self, id_plan):
-        """Vrátí detail jednoho jídelního plánu podle jeho ID."""
         plan = db.session.get(JidelniPlan, id_plan)
         if not plan:
             abort(404, message="Jídelní plán nenalezen.")
@@ -464,3 +520,74 @@ class RezervaceItem(MethodView):
         db.session.delete(rez)
         db.session.commit()
         return ""
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BODY – načtení stavu bodů na účtu
+# ──────────────────────────────────────────────────────────────────────────────
+@api_bp.route("/users/me/points")
+class MyPoints(MethodView):
+    @jwt_required()
+    @api_bp.response(200, VernostniUcetSchema)
+    def get(self):
+        zakaznik_id = int(get_jwt_identity())
+        ucet = db.session.query(VernostniUcet).filter_by(id_zakaznika=zakaznik_id).one_or_none()
+        if not ucet:
+            abort(404, message="Účet nenalezen.")
+        return ucet
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BODY – uplatnění bodů
+# ──────────────────────────────────────────────────────────────────────────────
+@api_bp.route("/users/me/redeem")
+class RedeemPoints(MethodView):
+    @jwt_required()
+    @api_bp.arguments(RedeemSchema)
+    @api_bp.response(200, VernostniUcetSchema)
+    def post(self, data):
+        zakaznik_id = int(get_jwt_identity())
+        ucet = db.session.query(VernostniUcet).filter_by(id_zakaznika=zakaznik_id).with_for_update().one_or_none()
+        if not ucet:
+            abort(404, message="Účet nenalezen.")
+        points = data.get("points", 0)
+        if ucet.body < points:
+            abort(400, message="Nedostatek bodů.")
+        ucet.body -= points
+        notif = Notifikace(
+            typ="REDEEM",
+            datum_cas=datetime.utcnow(),
+            text=f"Uplatněno {points} bodů.",
+            id_zakaznika=zakaznik_id
+        )
+        db.session.add(notif)
+        db.session.commit()
+        return ucet
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SSE – stream změn stavu objednávky (podpora tokenu v query-parametru)
+# ──────────────────────────────────────────────────────────────────────────────
+@api_bp.route("/events/objednavka/<int:id_objednavky>")
+class OrderEvents(MethodView):
+    def get(self, id_objednavky):
+        # pokud nemáš header Authorization, bereme token z query-parametru
+        token = request.args.get("token")
+        if token and not request.headers.get("Authorization"):
+            request.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
+
+        # ověříme teď JWT (vyhodí 401, pokud je špatný nebo chybí)
+        verify_jwt_in_request()
+
+        def event_stream():
+            last_ts = None
+            while True:
+                order = db.session.get(Objednavka, id_objednavky)
+                if order and order.cas_pripravy != last_ts:
+                    payload = {
+                        "status": order.stav,
+                        "cas_pripravy": order.cas_pripravy.isoformat() if order.cas_pripravy else None
+                    }
+                    yield f"event: update\n"
+                    yield f"data: {json.dumps(payload)}\n\n"
+                    last_ts = order.cas_pripravy
+                time.sleep(5)
+
+        return Response(event_stream(), mimetype="text/event-stream")
