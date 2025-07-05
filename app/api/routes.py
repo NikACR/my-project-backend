@@ -29,15 +29,14 @@ Principy a důležité body
 from functools import wraps
 from flask.views import MethodView
 from flask_smorest import abort
-from flask import request, Response
+from flask import request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from datetime import datetime, date
 from flask_jwt_extended import (
     jwt_required,
     get_jwt_identity,
-    get_jwt,
-    verify_jwt_in_request
+    get_jwt
 )
 import json, time
 
@@ -54,7 +53,7 @@ from ..schemas import (
     StulSchema, StulCreateSchema,
     SalonekSchema, SalonekCreateSchema,
     PodnikovaAkceSchema, PodnikovaAkceCreateSchema,
-    ObjednavkaSchema, ObjednavkaCreateSchema,
+    ObjednavkaSchema, ObjednavkaCreateSchema, ObjednavkaUserCreateSchema,
     PolozkaObjednavkySchema, PolozkaObjednavkyCreateSchema,
     PlatbaSchema, PlatbaCreateSchema,
     HodnoceniSchema, HodnoceniCreateSchema,
@@ -175,19 +174,13 @@ class ZakaznikItem(MethodView):
         return ""
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 2) GENERICKÝ register_crud PRO OSTATNÍ ENTITY (kromě objednavka)
+# 2) GENERICKÝ register_crud PRO OSTATNÍ ENTITY (včetně objednavka)
 # ──────────────────────────────────────────────────────────────────────────────
 def register_crud(
-    route_base,
-    model,
-    schema_cls,
-    create_schema_cls,
-    pk_name,
-    roles_list=("staff", "admin"),
-    roles_create=("staff", "admin"),
-    roles_item_get=("staff", "admin"),
-    roles_update=("staff", "admin"),
-    roles_delete=("staff", "admin")
+    route_base, model, schema_cls, create_schema_cls, pk_name,
+    roles_list=("staff","admin"), roles_create=("staff","admin"),
+    roles_item_get=("staff","admin"), roles_update=("staff","admin"),
+    roles_delete=("staff","admin")
 ):
     def check_roles(allowed):
         roles = set(get_jwt().get("roles", []))
@@ -251,111 +244,41 @@ def register_crud(
             db.session.commit()
             return ""
 
-# zaregistrujeme všechny entity kromě objednavka
-register_crud('ucet', VernostniUcet, VernostniUcetSchema, VernostniUcetCreateSchema, 'id_ucet')
-register_crud('stul', Stul, StulSchema, StulCreateSchema, 'id_stul', roles_list=('user','staff','admin'))
-register_crud('salonek', Salonek, SalonekSchema, SalonekCreateSchema, 'id_salonek',
-              roles_list=('user','staff','admin'),
-              roles_create=('user','staff','admin'),
-              roles_item_get=('user','staff','admin'),
-              roles_update=('user','staff','admin'),
-              roles_delete=('user','staff','admin'))
-register_crud('akce', PodnikovaAkce, PodnikovaAkceSchema, PodnikovaAkceCreateSchema, 'id_akce',
-              roles_list=('user','staff','admin'),
-              roles_create=('user','staff','admin'),
-              roles_item_get=('user','staff','admin'),
-              roles_update=('user','staff','admin'),
-              roles_delete=('user','staff','admin'))
-# <-- tady už **není** register_crud('objednavka', ...)
-register_crud('polozka-objednavky', PolozkaObjednavky, PolozkaObjednavkySchema, PolozkaObjednavkyCreateSchema, 'id_polozky_obj',
-              roles_list=('user','staff','admin'),
-              roles_create=('user','staff','admin'),
-              roles_item_get=('user','staff','admin'),
-              roles_update=('user','staff','admin'),
-              roles_delete=('user','staff','admin'))
-register_crud('platba', Platba, PlatbaSchema, PlatbaCreateSchema, 'id_platba',
-              roles_list=('user','staff','admin'),
-              roles_create=('user','staff','admin'),
-              roles_item_get=('user','staff','admin'),
-              roles_update=('user','staff','admin'),
-              roles_delete=('user','staff','admin'))
-register_crud('hodnoceni', Hodnoceni, HodnoceniSchema, HodnoceniCreateSchema, 'id_hodnoceni',
-              roles_list=('user','staff','admin'),
-              roles_create=('user','staff','admin'),
-              roles_item_get=('user','staff','admin'),
-              roles_update=('user','staff','admin'),
-              roles_delete=('user','staff','admin'))
-register_crud('notifikace', Notifikace, NotifikaceSchema, NotifikaceCreateSchema, 'id_notifikace',
-              roles_list=('user','staff','admin'),
-              roles_create=('user','staff','admin'),
-              roles_item_get=('user','staff','admin'),
-              roles_update=('user','staff','admin'),
-              roles_delete=('user','staff','admin'))
-register_crud('jidelni-plan', JidelniPlan, JidelniPlanSchema, JidelniPlanCreateSchema, 'id_plan')
-register_crud('polozka-planu', PolozkaJidelnihoPlanu, PolozkaJidelnihoPlanuSchema, PolozkaJidelnihoPlanuCreateSchema, 'id_polozka_jid_pl',
-              roles_list=('user','staff','admin'),
-              roles_create=('user','staff','admin'),
-              roles_item_get=('user','staff','admin'),
-              roles_update=('user','staff','admin'),
-              roles_delete=('user','staff','admin'))
-register_crud('alergen', Alergen, AlergenSchema, AlergenCreateSchema, 'id_alergenu',
-              roles_list=('user','staff','admin'),
-              roles_create=('user','staff','admin'),
-              roles_item_get=('user','staff','admin'),
-              roles_update=('user','staff','admin'),
-              roles_delete=('user','staff','admin'))
+# Registrace všech entit včetně objednavka CRUD
+for base,model,sc,cc,pk in [
+    ('ucet',VernostniUcet,VernostniUcetSchema,VernostniUcetCreateSchema,'id_ucet'),
+    ('stul',Stul,StulSchema,StulCreateSchema,'id_stul'),
+    ('salonek',Salonek,SalonekSchema,SalonekCreateSchema,'id_salonek'),
+    ('akce',PodnikovaAkce,PodnikovaAkceSchema,PodnikovaAkceCreateSchema,'id_akce'),
+    ('polozka-objednavky',PolozkaObjednavky,PolozkaObjednavkySchema,PolozkaObjednavkyCreateSchema,'id_polozky_obj'),
+    ('platba',Platba,PlatbaSchema,PlatbaCreateSchema,'id_platba'),
+    ('hodnoceni',Hodnoceni,HodnoceniSchema,HodnoceniCreateSchema,'id_hodnoceni'),
+    ('notifikace',Notifikace,NotifikaceSchema,NotifikaceCreateSchema,'id_notifikace'),
+    ('jidelni-plan',JidelniPlan,JidelniPlanSchema,JidelniPlanCreateSchema,'id_plan'),
+    ('polozka-planu',PolozkaJidelnihoPlanu,PolozkaJidelnihoPlanuSchema,PolozkaJidelnihoPlanuCreateSchema,'id_polozka_jid_pl'),
+    ('alergen',Alergen,AlergenSchema,AlergenCreateSchema,'id_alergenu'),
+    ('objednavka',Objednavka,ObjednavkaSchema,ObjednavkaCreateSchema,'id_objednavky')
+]:
+    register_crud(base, model, sc, cc, pk)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# VLASTNÍ ENDPOINT PRO OBJÉDNAVKU (s ID zákazníka z tokenu)
+# 3) VLASTNÍ POST /api/objednavka – injektuje id_zakaznika z tokenu
 # ──────────────────────────────────────────────────────────────────────────────
-@api_bp.route("/objednavka")
-class ObjednavkaCreate(MethodView):
-    @jwt_required()
-    @api_bp.arguments(ObjednavkaCreateSchema)
-    @api_bp.response(201, ObjednavkaSchema)
-    def post(self, new_data):
-        # přidáme id_zakaznika z přihlášeného JWT
-        new_data["id_zakaznika"] = int(get_jwt_identity())
-        objednavka = Objednavka(**new_data)
-        try:
-            db.session.add(objednavka)
-            db.session.commit()
-        except IntegrityError:
-            db.session.rollback()
-            abort(409, message="Duplicitní nebo neplatný záznam.")
-        return objednavka
-
-@api_bp.route("/objednavka/<int:id_objednavky>")
-class ObjednavkaItem(MethodView):
-    @jwt_required()
-    @api_bp.response(200, ObjednavkaSchema)
-    def get(self, id_objednavky):
-        obj = db.session.get(Objednavka, id_objednavky)
-        if not obj:
-            abort(404, message="Objednávka nenalezena.")
-        return obj
-
-    @jwt_required()
-    @api_bp.arguments(ObjednavkaCreateSchema(partial=True))
-    @api_bp.response(200, ObjednavkaSchema)
-    def put(self, data, id_objednavky):
-        obj = db.session.get(Objednavka, id_objednavky)
-        if not obj:
-            abort(404, message="Objednávka nenalezena.")
-        for k, v in data.items():
-            setattr(obj, k, v)
+@api_bp.route("/objednavka", methods=["POST"])
+@jwt_required()
+@api_bp.arguments(ObjednavkaUserCreateSchema)
+@api_bp.response(201, ObjednavkaSchema)
+def create_objednavka(new_data):
+    # inject id_zakaznika z tokenu
+    new_data["id_zakaznika"] = int(get_jwt_identity())
+    objednavka = Objednavka(**new_data)
+    try:
+        db.session.add(objednavka)
         db.session.commit()
-        return obj
-
-    @jwt_required()
-    @api_bp.response(204)
-    def delete(self, id_objednavky):
-        obj = db.session.get(Objednavka, id_objednavky)
-        if not obj:
-            abort(404, message="Objednávka nenalezena.")
-        db.session.delete(obj)
-        db.session.commit()
-        return ""
+    except IntegrityError:
+        db.session.rollback()
+        abort(409, message="Duplicitní nebo neplatný záznam.")
+    return objednavka
 
 # ──────────────────────────────────────────────────────────────────────────────
 # VLASTNÍ ENDPOINTY PRO MENU
@@ -563,31 +486,32 @@ class RedeemPoints(MethodView):
         return ucet
 
 # ──────────────────────────────────────────────────────────────────────────────
-# SSE – stream změn stavu objednávky (podpora tokenu v query-parametru)
+# Override POST /platba: ukládá platbu, přičítá body a vytváří notifikaci
 # ──────────────────────────────────────────────────────────────────────────────
-@api_bp.route("/events/objednavka/<int:id_objednavky>")
-class OrderEvents(MethodView):
-    def get(self, id_objednavky):
-        # pokud nemáš header Authorization, bereme token z query-parametru
-        token = request.args.get("token")
-        if token and not request.headers.get("Authorization"):
-            request.environ["HTTP_AUTHORIZATION"] = f"Bearer {token}"
+@api_bp.route('/platba', methods=['POST'])
+@jwt_required()
+@api_bp.arguments(PlatbaCreateSchema, location='json')
+@api_bp.response(201, PlatbaSchema)
+def create_platba_with_points(args):
+    user_id = int(get_jwt_identity())
 
-        # ověříme teď JWT (vyhodí 401, pokud je špatný nebo chybí)
-        verify_jwt_in_request()
+    # 1) Vytvořím Platba
+    platba = Platba(zakaznik_id=user_id, **args)
+    db.session.add(platba)
+    db.session.flush()  # vyplní platba.id
 
-        def event_stream():
-            last_ts = None
-            while True:
-                order = db.session.get(Objednavka, id_objednavky)
-                if order and order.cas_pripravy != last_ts:
-                    payload = {
-                        "status": order.stav,
-                        "cas_pripravy": order.cas_pripravy.isoformat() if order.cas_pripravy else None
-                    }
-                    yield f"event: update\n"
-                    yield f"data: {json.dumps(payload)}\n\n"
-                    last_ts = order.cas_pripravy
-                time.sleep(5)
+    # 2) Spočítám a přičtu loyalty body (1 bod / 10 Kč)
+    earned = int(float(args['castka']) // 10)
+    ucet = VernostniUcet.query.filter_by(zakaznik_id=user_id).one()
+    ucet.body += earned
+    db.session.add(ucet)
 
-        return Response(event_stream(), mimetype="text/event-stream")
+    # 3) Vytvořím notifikaci
+    zprava = f"Platba #{platba.id} za {args['castka']} Kč úspěšná, získáno {earned} bodů."
+    note = Notifikace(zakaznik_id=user_id, text=zprava, datum_cas=datetime.utcnow())
+    db.session.add(note)
+
+    # 4) Commit
+    db.session.commit()
+
+    return platba
