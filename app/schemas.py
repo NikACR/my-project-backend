@@ -1,5 +1,3 @@
-# app/schemas.py
-
 from marshmallow import Schema, fields, validate, validates_schema, ValidationError, post_dump
 
 # — LOGIN schéma —
@@ -8,10 +6,6 @@ class LoginSchema(Schema):
     password = fields.Str(required=True, load_only=True)
 
 # — SUMMARY schémata —
-class LoginSchema(Schema):
-    email    = fields.Email(required=True)
-    password = fields.Str(required=True, load_only=True)
-
 class RezervaceSummarySchema(Schema):
     id_rezervace  = fields.Int()
     datum_cas     = fields.DateTime()
@@ -199,21 +193,31 @@ class PodnikovaAkceCreateSchema(Schema):
 
 # — Objednávka —
 class ObjednavkaSchema(Schema):
-    id_objednavky = fields.Int(dump_only=True)
-    datum_cas = fields.DateTime()
-    stav = fields.Str()
-    celkova_castka = fields.Decimal(as_string=True)
-    zakaznik = fields.Nested(ZakaznikSummarySchema, dump_only=True)
-    polozky = fields.Nested(PolozkaObjednavkySummarySchema, many=True, dump_only=True)
-    platby = fields.Nested(PlatbaSummarySchema, many=True, dump_only=True)
-    hodnoceni = fields.Nested(HodnoceniSummarySchema, many=True, dump_only=True)
-    notifikace = fields.Nested(NotifikaceSummarySchema, many=True, dump_only=True)
+    id_objednavky   = fields.Int(dump_only=True)
+    datum_cas       = fields.DateTime()
+    stav            = fields.Str()
+    cas_pripravy    = fields.DateTime(dump_only=True)
+    body_ziskane    = fields.Int(dump_only=True)
+    celkova_castka  = fields.Decimal(as_string=True)
+    zakaznik        = fields.Nested(ZakaznikSummarySchema, dump_only=True)
+    polozky         = fields.Nested(PolozkaObjednavkySummarySchema, many=True, dump_only=True)
+    platby          = fields.Nested(PlatbaSummarySchema, many=True, dump_only=True)
+    hodnoceni       = fields.Nested(HodnoceniSummarySchema, many=True, dump_only=True)
+    notifikace      = fields.Nested(NotifikaceSummarySchema, many=True, dump_only=True)
 
+# ** toto použij pro POST /objednavka **  
+class ObjednavkaUserCreateSchema(Schema):
+    datum_cas       = fields.DateTime(required=True)
+    stav            = fields.Str(missing="čekající")
+    celkova_castka  = fields.Decimal(as_string=True, required=True)
+    # id_zakaznika INJEKTUJEME V KÓDU, NE POSÍLÁ SE Z FRONTENDU
+
+# ** ponechávám pro interní použití, ale už ho NEVIAŽ na POST routu **
 class ObjednavkaCreateSchema(Schema):
-    datum_cas = fields.DateTime(required=True)
-    stav = fields.Str()
-    celkova_castka = fields.Decimal(as_string=True)
-    id_zakaznika = fields.Int(required=True)
+    datum_cas       = fields.DateTime(required=True)
+    stav            = fields.Str()
+    celkova_castka  = fields.Decimal(as_string=True)
+    id_zakaznika    = fields.Int(required=True)
 
 # — Položka objednávky —
 class PolozkaObjednavkySchema(Schema):
@@ -230,11 +234,13 @@ class PolozkaObjednavkyCreateSchema(Schema):
 
 # — Platba —
 class PlatbaSchema(Schema):
-    id_platba = fields.Int(dump_only=True)
-    castka = fields.Decimal(as_string=True)
-    typ_platby = fields.Str()
-    datum = fields.DateTime()
-    objednavka = fields.Nested(ObjednavkaSummarySchema, dump_only=True)
+    id_platba    = fields.Int(dump_only=True)
+    castka       = fields.Decimal(as_string=True)
+    typ_platby   = fields.Str()
+    datum        = fields.DateTime()
+    objednavka   = fields.Nested(ObjednavkaSummarySchema, dump_only=True)
+    body_ziskane = fields.Int(dump_only=True)   # přidáno
+    body_celkem  = fields.Int(dump_only=True)   # přidáno
 
 class PlatbaCreateSchema(Schema):
     castka = fields.Decimal(as_string=True, required=True)
@@ -265,7 +271,7 @@ class PolozkaMenuSchema(Schema):
     popis           = fields.Str(load_default="", allow_none=False)
     cena            = fields.Decimal(as_string=True)
     obrazek_url     = fields.Str()
-    kategorie       = fields.Str()  # "týdenní","víkendové" nebo "stálá nabídka"
+    kategorie       = fields.Str()
     den             = fields.Str(allow_none=True)
     alergeny        = fields.Method("get_alergeny", dump_only=True)
 
@@ -290,6 +296,7 @@ class PolozkaMenuCreateSchema(Schema):
             ["Pondělí","Úterý","Středa","Čtvrtek","Pátek","Sobota","Neděle", None]
         )
     )
+
 # — Položka menu ↔ alergen —
 class PolozkaMenuAlergenSchema(Schema):
     id_menu_polozka = fields.Int(dump_only=True)
@@ -364,3 +371,8 @@ class RoleSchema(Schema):
 
 class UserRoleAssignSchema(Schema):
     role_id = fields.Int(required=True)
+
+
+# — Pro uplatnění bodů —
+class RedeemSchema(Schema):
+    points = fields.Int(required=True)
