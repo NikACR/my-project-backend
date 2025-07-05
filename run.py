@@ -1,5 +1,3 @@
-# run.py
-
 import os
 import click
 from datetime import datetime, date, time, timedelta
@@ -36,7 +34,7 @@ def _vycistit_databazi():
     db.session.query(Salonek).delete()
     db.session.query(Stul).delete()
     db.session.query(VernostniUcet).delete()
-    # nejdřív smažeme vazby user_roles, aby při mazání zakazniků nevznikl FK konflikt
+    # smažeme vazby user_roles, aby při mazání zakazniků nevznikl FK konflikt
     db.session.execute(text('DELETE FROM user_roles'))
     db.session.query(Zakaznik).delete()
     db.session.query(Role).delete()
@@ -54,7 +52,7 @@ def seed_db():
     db.session.add_all([admin_role, staff_role, user_role])
     db.session.flush()
 
-    # 1) Zákazníci (role = user)
+    # 1) Zákazníci (role=user)
     zak1 = Zakaznik(jmeno="Petr",    prijmeni="Svoboda",   email="petr.svoboda@example.cz",   telefon="603123456")
     zak1.password = "tajneheslo1"
     zak1.roles.append(user_role)
@@ -85,15 +83,19 @@ def seed_db():
     admin.password = "rootpass"
     admin.roles.append(admin_role)
 
-    # Uložení zákazníků, staff i admina
     db.session.add_all([zak1, zak2, zak3, staff1, staff2, staff3, admin])
     db.session.commit()
 
-    # 4) Věrnostní účty
-    uc1 = VernostniUcet(body=150, datum_zalozeni=date.today() - timedelta(days=45), zakaznik=zak1)
-    uc2 = VernostniUcet(body=70,  datum_zalozeni=date.today() - timedelta(days=20), zakaznik=zak2)
-    uc3 = VernostniUcet(body=230, datum_zalozeni=date.today() - timedelta(days=90), zakaznik=zak3)
-    db.session.add_all([uc1, uc2, uc3])
+    # 4) Věrnostní účty – všichni začínají na 0 bodech
+    for zak in Zakaznik.query.all():
+        db.session.add(
+            VernostniUcet(
+                body=0,
+                datum_zalozeni=date.today(),
+                zakaznik=zak
+            )
+        )
+    db.session.commit()
 
     # 5) Stoly
     s1 = Stul(cislo=1, kapacita=4, popis="U okna")
@@ -108,12 +110,27 @@ def seed_db():
     db.session.add_all([sal1, sal2, sal3])
 
     # 7) Podnikové akce
-    ak1 = PodnikovaAkce(nazev="Firemní večírek", popis="večerní setkání pro zaměstnance",
-                        datum=date.today() + timedelta(days=5), cas=time(18, 0), salonek=sal1)
-    ak2 = PodnikovaAkce(nazev="Degustace vín",    popis="ochutnávka vybraných vín",
-                        datum=date.today() + timedelta(days=10), cas=time(17, 30), salonek=sal2)
-    ak3 = PodnikovaAkce(nazev="Květinový workshop", popis="tvořivá dílna",
-                        datum=date.today() + timedelta(days=15), cas=time(16, 0), salonek=sal3)
+    ak1 = PodnikovaAkce(
+        nazev="Firemní večírek",
+        popis="večerní setkání pro zaměstnance",
+        datum=date.today() + timedelta(days=5),
+        cas=time(18, 0),
+        salonek=sal1
+    )
+    ak2 = PodnikovaAkce(
+        nazev="Degustace vín",
+        popis="ochutnávka vybraných vín",
+        datum=date.today() + timedelta(days=10),
+        cas=time(17, 30),
+        salonek=sal2
+    )
+    ak3 = PodnikovaAkce(
+        nazev="Květinový workshop",
+        popis="tvořivá dílna",
+        datum=date.today() + timedelta(days=15),
+        cas=time(16, 0),
+        salonek=sal3
+    )
     db.session.add_all([ak1, ak2, ak3])
 
     # 8) Položky menu
@@ -121,11 +138,13 @@ def seed_db():
     m2 = PolozkaMenu(nazev="Hovězí burger", popis="burger s hranolkami", cena=249.00)
     m3 = PolozkaMenu(nazev="Caesar salát", popis="čerstvý salát", cena=159.00)
 
-    # --- doplníme výchozí kategorie a den (aby nebyly NULL) ---
-    dnes_jmeno = datetime.now().strftime("%A")  # např. "Thursday"
+    dnes_jmeno = datetime.now().strftime("%A")
+    default_prep_time = 15
     for m in (m1, m2, m3):
-        m.kategorie = "Týdenní nabídka"
-        m.den       = dnes_jmeno
+        m.kategorie         = "Týdenní nabídka"
+        m.den               = dnes_jmeno
+        m.preparation_time  = default_prep_time
+        m.points            = int(m.cena // 10)
 
     db.session.add_all([m1, m2, m3])
 
@@ -143,12 +162,30 @@ def seed_db():
     ])
 
     # 11) Rezervace
-    r1 = Rezervace(datum_cas=datetime.now() + timedelta(days=1), pocet_osob=2,
-                   stav_rezervace="potvrzená", sleva=0, zakaznik=zak1, stul=s1)
-    r2 = Rezervace(datum_cas=datetime.now() + timedelta(days=2), pocet_osob=4,
-                   stav_rezervace="čekající", sleva=10, zakaznik=zak2, stul=s2)
-    r3 = Rezervace(datum_cas=datetime.now() + timedelta(days=3), pocet_osob=6,
-                   stav_rezervace="zrušená", sleva=0, zakaznik=zak3, salonek=sal3)
+    r1 = Rezervace(
+        datum_cas=datetime.now() + timedelta(days=1),
+        pocet_osob=2,
+        stav_rezervace="potvrzená",
+        sleva=0,
+        zakaznik=zak1,
+        stul=s1
+    )
+    r2 = Rezervace(
+        datum_cas=datetime.now() + timedelta(days=2),
+        pocet_osob=4,
+        stav_rezervace="čekající",
+        sleva=10,
+        zakaznik=zak2,
+        stul=s2
+    )
+    r3 = Rezervace(
+        datum_cas=datetime.now() + timedelta(days=3),
+        pocet_osob=6,
+        stav_rezervace="zrušená",
+        sleva=0,
+        zakaznik=zak3,
+        salonek=sal3
+    )
     db.session.add_all([r1, r2, r3])
 
     # 12) Objednávky
@@ -171,20 +208,20 @@ def seed_db():
 
     # 15) Hodnocení
     h1 = Hodnoceni(hodnoceni=5, komentar="Vynikající služba!", datum=datetime.now(), objednavka=o1, zakaznik=zak1)
-    h2 = Hodnoceni(hodnoceni=4, komentar="Velmi dobré.",     datum=datetime.now(), objednavka=o2, zakaznik=zak2)
-    h3 = Hodnoceni(hodnoceni=3, komentar="Ujde.",           datum=datetime.now(), objednavka=o3, zakaznik=zak3)
+    h2 = Hodnoceni(hodnoceni=4, komentar="Velmi dobré.",      datum=datetime.now(), objednavka=o2, zakaznik=zak2)
+    h3 = Hodnoceni(hodnoceni=3, komentar="Ujde.",             datum=datetime.now(), objednavka=o3, zakaznik=zak3)
     db.session.add_all([h1, h2, h3])
 
     # 16) Jídelní plány
-    jp1 = JidelniPlan(nazev="Týdenní nabídka", platny_od=date.today(), platny_do=date.today()+timedelta(days=7))
-    jp2 = JidelniPlan(nazev="Víkendový speciál", platny_od=date.today(), platny_do=date.today()+timedelta(days=2))
-    jp3 = JidelniPlan(nazev="Zimní menu",       platny_od=date.today(), platny_do=date.today()+timedelta(days=30))
+    jp1 = JidelniPlan(nazev="Týdenní nabídka",     platny_od=date.today(),           platny_do=date.today()+timedelta(days=7))
+    jp2 = JidelniPlan(nazev="Víkendový speciál",    platny_od=date.today(),           platny_do=date.today()+timedelta(days=2))
+    jp3 = JidelniPlan(nazev="Zimní menu",           platny_od=date.today(),           platny_do=date.today()+timedelta(days=30))
     db.session.add_all([jp1, jp2, jp3])
 
     # 17) Položky jídelních plánů
-    jpp1 = PolozkaJidelnihoPlanu(den=date.today(), poradi=1, plan=jp1, menu_polozka=m1)
-    jpp2 = PolozkaJidelnihoPlanu(den=date.today(), poradi=2, plan=jp1, menu_polozka=m2)
-    jpp3 = PolozkaJidelnihoPlanu(den=date.today()+timedelta(days=1), poradi=1, plan=jp2, menu_polozka=m3)
+    jpp1 = PolozkaJidelnihoPlanu(den=date.today(),                         poradi=1, plan=jp1, menu_polozka=m1)
+    jpp2 = PolozkaJidelnihoPlanu(den=date.today(),                         poradi=2, plan=jp1, menu_polozka=m2)
+    jpp3 = PolozkaJidelnihoPlanu(den=date.today()+timedelta(days=1),      poradi=1, plan=jp2, menu_polozka=m3)
     db.session.add_all([jpp1, jpp2, jpp3])
 
     # 18) Notifikace
@@ -194,7 +231,7 @@ def seed_db():
     db.session.add_all([n1, n2, n3])
 
     db.session.commit()
-    click.echo("✅ Demo data a role úspěšně vloženy do všech tabulek.")
+    click.echo("✅ Demo data a role vloženy a všichni uživatelé mají věrnostní účet s 0 body.")
 
 
 @app.shell_context_processor
@@ -222,4 +259,5 @@ def make_shell_context():
 
 
 if __name__ == "__main__":
+    print(app.url_map)
     app.run(host="0.0.0.0", port=8000, debug=True)

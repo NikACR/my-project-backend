@@ -4,7 +4,7 @@ from .db import db                                    # db = SQLAlchemy instance
 from sqlalchemy import CheckConstraint                 # pro kontrolu podmínek na úrovni DB
 from werkzeug.security import generate_password_hash, check_password_hash  
                                                       # pro hashování a ověřování hesel
-from datetime import datetime, date                         # pro časové razítko blacklistu
+from datetime import datetime, date                    # pro časové razítko a datum
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PARAMETRY:
@@ -48,7 +48,7 @@ class Zakaznik(db.Model):
     ucet       = db.relationship(
         "VernostniUcet",
         back_populates="zakaznik",
-        uselist=False,               # 1:1
+        uselist=False,
         cascade="all, delete-orphan"
     )
     rezervace  = db.relationship("Rezervace",    back_populates="zakaznik", lazy="dynamic")
@@ -68,23 +68,20 @@ class Zakaznik(db.Model):
 
     @property
     def password(self):
-        # zabrání přímému čtení atributu .password
         raise AttributeError("Heslo nelze číst v čistém textu.")
 
     @password.setter
     def password(self, raw_password: str):
-        # vytvoří hash z raw_password a uloží ho do _password
         self._password = generate_password_hash(raw_password)
 
     def check_password(self, raw_password: str) -> bool:
-        # porovná raw_password s uloženým hashem
         return check_password_hash(self._password, raw_password)
 
 
 class VernostniUcet(db.Model):
     """
     Věrnostní účet:
-    - vytvoří se automaticky při přidání Zakaznik (v routes.py)
+    - vytvoří se automaticky při přidání Zakaznik
     - body            (int, default 0)
     - datum_zalozeni  (date, NOT NULL, default = dnes)
     - vztah 1:1 zpět na Zakaznik
@@ -100,7 +97,6 @@ class VernostniUcet(db.Model):
         nullable=False
     )
 
-    # uselist=False => 1:1 vztah
     zakaznik = db.relationship("Zakaznik", back_populates="ucet", uselist=False)
 
     def __repr__(self):
@@ -132,7 +128,7 @@ class Rezervace(db.Model):
     zakaznik   = db.relationship("Zakaznik", back_populates="rezervace")
     stul       = db.relationship("Stul",      back_populates="rezervace")
     salonek    = db.relationship("Salonek",   back_populates="rezervace")
-    akce       = db.relationship("PodnikovaAkce", back_populates="rezervace")      # ← přidáno
+    akce       = db.relationship("PodnikovaAkce", back_populates="rezervace")
     notifikace = db.relationship("Notifikace", back_populates="rezervace", lazy="dynamic")
 
     def __repr__(self):
@@ -140,12 +136,6 @@ class Rezervace(db.Model):
 
 
 class Stul(db.Model):
-    """
-    Stůl:
-    - cislo, kapacita jsou povinné
-    - popis volitelný
-    - vztah 1:N na Rezervace
-    """
     __tablename__ = "stul"
     id_stul   = db.Column(db.Integer, primary_key=True)
     cislo     = db.Column(db.Integer, nullable=False, unique=True)
@@ -159,11 +149,6 @@ class Stul(db.Model):
 
 
 class Salonek(db.Model):
-    """
-    Salónek:
-    - nazev, kapacita povinné; popis volitelný
-    - vztahy: Rezervace (1:N), PodnikovaAkce (1:N)
-    """
     __tablename__ = "salonek"
     id_salonek = db.Column(db.Integer, primary_key=True)
     nazev      = db.Column(db.String(100), nullable=False)
@@ -194,30 +179,18 @@ class PodnikovaAkce(db.Model):
 
 
 class Objednavka(db.Model):
-    """
-    Objednavka:
-    - datum_cas, id_zakaznika povinné; stav, celkova_castka volitelné
-    - vztahy: PolozkaObjednavky, Platba, Hodnoceni, Notifikace
-    """
     __tablename__ = "objednavka"
 
-    id_objednavky     = db.Column(db.Integer, primary_key=True)
-    datum_cas         = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-    stav              = db.Column(
-                           db.String(20),
-                           nullable=False,
-                           default="PENDING"
-                       )
-    celkova_castka    = db.Column(db.Numeric(8, 2), nullable=True)
-    id_zakaznika      = db.Column(
-                           db.Integer,
-                           db.ForeignKey("zakaznik.id_zakaznika", ondelete="CASCADE"),
-                           nullable=False
-                       )
+    id_objednavky = db.Column(db.Integer, primary_key=True)
+    datum_cas     = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+    stav          = db.Column(db.String(20), nullable=False, default="PENDING")
+    celkova_castka= db.Column(db.Numeric(8, 2), nullable=True)
+    id_zakaznika  = db.Column(db.Integer, db.ForeignKey("zakaznik.id_zakaznika", ondelete="CASCADE"), nullable=False)
 
-    # nová pole s českými názvy
-    cas_pripravy     = db.Column(db.DateTime, nullable=True)
-    body_ziskane     = db.Column(db.Integer, nullable=False, default=0)
+    # nová pole
+    cas_pripravy = db.Column(db.DateTime, nullable=True)
+    body_ziskane = db.Column(db.Integer, nullable=False, default=0)
+    discount_amount = db.Column(db.Integer, nullable=False, default=0)
 
     zakaznik   = db.relationship("Zakaznik", back_populates="objednavky")
     polozky    = db.relationship("PolozkaObjednavky", back_populates="objednavka", lazy="dynamic")
@@ -228,11 +201,8 @@ class Objednavka(db.Model):
     def __repr__(self):
         return f"<Objednavka {self.id_objednavky}>"
 
+
 class PolozkaObjednavky(db.Model):
-    """
-    PolozkaObjednavky:
-    - mnozstvi, cena, id_objednavky, id_menu_polozka povinné
-    """
     __tablename__ = "polozka_objednavky"
     id_polozky_obj  = db.Column(db.Integer, primary_key=True)
     mnozstvi        = db.Column(db.Integer, nullable=False)
@@ -240,18 +210,14 @@ class PolozkaObjednavky(db.Model):
     id_objednavky   = db.Column(db.Integer, db.ForeignKey("objednavka.id_objednavky"), nullable=False)
     id_menu_polozka = db.Column(db.Integer, db.ForeignKey("polozka_menu.id_menu_polozka"), nullable=False)
 
-    objednavka   = db.relationship("Objednavka",        back_populates="polozky")
-    menu_polozka = db.relationship("PolozkaMenu",        back_populates="objednavky")
+    objednavka   = db.relationship("Objednavka",     back_populates="polozky")
+    menu_polozka = db.relationship("PolozkaMenu",     back_populates="objednavky")
 
     def __repr__(self):
-        return f"<PolozkaObjednavky {self.id_polozky_obj} qty={self.mnozstvi}>"
+        return f"<PolozkaObjednavky {self.id_polozky_obj}>"
 
 
 class Platba(db.Model):
-    """
-    Platba:
-    - castka, typ_platby, datum, id_objednavky povinné
-    """
     __tablename__ = "platba"
     id_platba     = db.Column(db.Integer, primary_key=True)
     castka        = db.Column(db.Numeric(8, 2), nullable=False)
@@ -262,27 +228,23 @@ class Platba(db.Model):
     objednavka = db.relationship("Objednavka", back_populates="platby")
 
     def __repr__(self):
-        return f"<Platba {self.id_platba} amt={self.castka}>"
+        return f"<Platba {self.id_platba}>"
 
 
 class Hodnoceni(db.Model):
-    """
-    Hodnoceni:
-    - hodnoceni, datum, id_objednavky, id_zakaznika povinné; komentar volitelný
-    """
     __tablename__ = "hodnoceni"
-    id_hodnoceni   = db.Column(db.Integer, primary_key=True)
-    hodnoceni      = db.Column(db.SmallInteger, nullable=False)
-    komentar       = db.Column(db.Text,           nullable=True)
-    datum          = db.Column(db.DateTime,       nullable=False)
-    id_objednavky  = db.Column(db.Integer, db.ForeignKey("objednavka.id_objednavky"), nullable=False)
-    id_zakaznika   = db.Column(db.Integer, db.ForeignKey("zakaznik.id_zakaznika", ondelete="CASCADE"), nullable=False)
+    id_hodnoceni = db.Column(db.Integer, primary_key=True)
+    hodnoceni    = db.Column(db.SmallInteger, nullable=False)
+    komentar     = db.Column(db.Text,           nullable=True)
+    datum        = db.Column(db.DateTime,       nullable=False)
+    id_objednavky= db.Column(db.Integer, db.ForeignKey("objednavka.id_objednavky"), nullable=False)
+    id_zakaznika = db.Column(db.Integer, db.ForeignKey("zakaznik.id_zakaznika", ondelete="CASCADE"), nullable=False)
 
-    objednavka = db.relationship("Objednavka", back_populates="hodnoceni")
-    zakaznik   = db.relationship("Zakaznik",    back_populates="hodnoceni")
+    objednavka = db.relationship("Objednavka",   back_populates="hodnoceni")
+    zakaznik   = db.relationship("Zakaznik",     back_populates="hodnoceni")
 
     def __repr__(self):
-        return f"<Hodnoceni {self.id_hodnoceni} score={self.hodnoceni}>"
+        return f"<Hodnoceni {self.id_hodnoceni}>"
 
 
 class PolozkaMenu(db.Model):
@@ -293,8 +255,12 @@ class PolozkaMenu(db.Model):
     popis           = db.Column(db.Text,           nullable=True)
     cena            = db.Column(db.Numeric(8, 2),  nullable=False)
     obrazek_url     = db.Column(db.String,         nullable=True)
-    kategorie       = db.Column(db.String(20),     nullable=False)  # 'týdenní' nebo 'víkendové'
-    den             = db.Column(db.String(10),     nullable=False)  # 'Pondělí' … 'Neděle'
+    kategorie       = db.Column(db.String(20),     nullable=False)
+    den             = db.Column(db.String(10),     nullable=False)
+
+    # nové
+    preparation_time = db.Column(db.Integer, nullable=False)
+    points           = db.Column(db.Integer, nullable=False)
 
     objednavky = db.relationship(
         "PolozkaObjednavky",
@@ -316,6 +282,22 @@ class PolozkaMenu(db.Model):
         return f"<PolozkaMenu {self.nazev}>"
 
 
+class Alergen(db.Model):
+    __tablename__ = "alergen"
+    id_alergenu = db.Column(db.Integer, primary_key=True)
+    nazev       = db.Column(db.String(100), nullable=False)
+    popis       = db.Column(db.Text,           nullable=True)
+
+    polozky = db.relationship(
+        "PolozkaMenuAlergen",
+        back_populates="alergen",
+        lazy="selectin",
+    )
+
+    def __repr__(self):
+        return f"<Alergen {self.nazev}>"
+
+
 class PolozkaMenuAlergen(db.Model):
     __tablename__ = "polozka_menu_alergen"
     id_menu_polozka = db.Column(db.Integer, db.ForeignKey("polozka_menu.id_menu_polozka"), primary_key=True)
@@ -328,13 +310,7 @@ class PolozkaMenuAlergen(db.Model):
         return f"<PMA {self.id_menu_polozka}/{self.id_alergenu}>"
 
 
-
 class JidelniPlan(db.Model):
-    """
-    JidelniPlan:
-    - nazev, platny_od povinné; platny_do volitelné
-    - vztah: polozky (1:N)
-    """
     __tablename__ = "jidelni_plan"
     id_plan    = db.Column(db.Integer, primary_key=True)
     nazev      = db.Column(db.String(100), nullable=False)
@@ -348,10 +324,6 @@ class JidelniPlan(db.Model):
 
 
 class PolozkaJidelnihoPlanu(db.Model):
-    """
-    PolozkaJidelnihoPlanu:
-    - den, poradi, id_plan, id_menu_polozka povinné
-    """
     __tablename__ = "polozka_jidelniho_planu"
     id_polozka_jid_pl = db.Column(db.Integer, primary_key=True)
     den               = db.Column(db.Date,    nullable=False)
@@ -366,28 +338,7 @@ class PolozkaJidelnihoPlanu(db.Model):
         return f"<PolozkaJidelnihoPlanu {self.id_polozka_jid_pl}>"
 
 
-class Alergen(db.Model):
-    __tablename__ = "alergen"
-    id_alergenu = db.Column(db.Integer, primary_key=True)
-    nazev       = db.Column(db.String(100), nullable=False)
-    popis       = db.Column(db.Text,           nullable=True)
-
-    # ← ZDE jsme změnili lazy z "dynamic" na "selectin":
-    polozky = db.relationship(
-        "PolozkaMenuAlergen",
-        back_populates="alergen",
-        lazy="selectin",
-    )
-
-    def __repr__(self):
-        return f"<Alergen {self.nazev}>"
-
 class Notifikace(db.Model):
-    """
-    Notifikace:
-    - typ, datum_cas povinné; text, id_rezervace, id_objednavky volitelné
-    - vztahy: Rezervace, Objednavka
-    """
     __tablename__    = "notifikace"
     id_notifikace    = db.Column(db.Integer, primary_key=True)
     typ              = db.Column(db.String(20), nullable=False)
@@ -400,16 +351,10 @@ class Notifikace(db.Model):
     objednavka  = db.relationship("Objednavka",  back_populates="notifikace")
 
     def __repr__(self):
-        return f"<Notifikace {self.id_notifikace} type={self.typ}>"
+        return f"<Notifikace {self.id_notifikace}>"
 
 
 class Role(db.Model):
-    """
-    Role:
-    - id_role: primární klíč
-    - name: unikátní název role (např. "admin", "editor")
-    - description: nepovinný popis role
-    """
     __tablename__ = "role"
     id_role       = db.Column(db.Integer, primary_key=True)
     name          = db.Column(db.String(30), unique=True, nullable=False)
@@ -420,13 +365,10 @@ class Role(db.Model):
 
 
 class TokenBlacklist(db.Model):
-    """
-    TokenBlacklist:
-    - id: primární klíč
-    - jti: jedinečný identifikátor JWT (token ID)
-    - created_at: čas přidání na blacklist
-    """
     __tablename__ = "token_blacklist"
-    id          = db.Column(db.Integer, primary_key=True)
-    jti         = db.Column(db.String(36), unique=True, nullable=False)
-    created_at  = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    id           = db.Column(db.Integer, primary_key=True)
+    jti          = db.Column(db.String(36), unique=True, nullable=False)
+    created_at   = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+    def __repr__(self):
+        return f"<TokenBlacklist jti={self.jti}>"

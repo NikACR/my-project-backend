@@ -32,13 +32,12 @@ from flask_smorest import abort
 from flask import request
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from flask_jwt_extended import (
     jwt_required,
     get_jwt_identity,
     get_jwt
 )
-import json, time
 
 from ..db import db
 from ..models import (
@@ -53,7 +52,7 @@ from ..schemas import (
     StulSchema, StulCreateSchema,
     SalonekSchema, SalonekCreateSchema,
     PodnikovaAkceSchema, PodnikovaAkceCreateSchema,
-    ObjednavkaSchema, ObjednavkaCreateSchema, ObjednavkaUserCreateSchema,
+    ObjednavkaSchema, ObjednavkaUserCreateSchema,
     PolozkaObjednavkySchema, PolozkaObjednavkyCreateSchema,
     PlatbaSchema, PlatbaCreateSchema,
     HodnoceniSchema, HodnoceniCreateSchema,
@@ -174,7 +173,7 @@ class ZakaznikItem(MethodView):
         return ""
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 2) GENERICKÝ register_crud PRO OSTATNÍ ENTITY (včetně objednavka)
+# 2) GENERICKÝ register_crud PRO OSTATNÍ ENTITY
 # ──────────────────────────────────────────────────────────────────────────────
 def register_crud(
     route_base, model, schema_cls, create_schema_cls, pk_name,
@@ -244,41 +243,94 @@ def register_crud(
             db.session.commit()
             return ""
 
-# Registrace všech entit včetně objednavka CRUD
-for base,model,sc,cc,pk in [
-    ('ucet',VernostniUcet,VernostniUcetSchema,VernostniUcetCreateSchema,'id_ucet'),
-    ('stul',Stul,StulSchema,StulCreateSchema,'id_stul'),
-    ('salonek',Salonek,SalonekSchema,SalonekCreateSchema,'id_salonek'),
-    ('akce',PodnikovaAkce,PodnikovaAkceSchema,PodnikovaAkceCreateSchema,'id_akce'),
-    ('polozka-objednavky',PolozkaObjednavky,PolozkaObjednavkySchema,PolozkaObjednavkyCreateSchema,'id_polozky_obj'),
-    ('platba',Platba,PlatbaSchema,PlatbaCreateSchema,'id_platba'),
-    ('hodnoceni',Hodnoceni,HodnoceniSchema,HodnoceniCreateSchema,'id_hodnoceni'),
-    ('notifikace',Notifikace,NotifikaceSchema,NotifikaceCreateSchema,'id_notifikace'),
-    ('jidelni-plan',JidelniPlan,JidelniPlanSchema,JidelniPlanCreateSchema,'id_plan'),
-    ('polozka-planu',PolozkaJidelnihoPlanu,PolozkaJidelnihoPlanuSchema,PolozkaJidelnihoPlanuCreateSchema,'id_polozka_jid_pl'),
-    ('alergen',Alergen,AlergenSchema,AlergenCreateSchema,'id_alergenu'),
-    ('objednavka',Objednavka,ObjednavkaSchema,ObjednavkaCreateSchema,'id_objednavky')
+# CRUD pro základní entity
+for base, model, sc, cc, pk in [
+    ('ucet', VernostniUcet, VernostniUcetSchema, VernostniUcetCreateSchema, 'id_ucet'),
+    ('stul', Stul, StulSchema, StulCreateSchema, 'id_stul'),
+    ('salonek', Salonek, SalonekSchema, SalonekCreateSchema, 'id_salonek'),
+    ('akce', PodnikovaAkce, PodnikovaAkceSchema, PodnikovaAkceCreateSchema, 'id_akce'),
+    ('alergen', Alergen, AlergenSchema, AlergenCreateSchema, 'id_alergenu'),
 ]:
     register_crud(base, model, sc, cc, pk)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 3) VLASTNÍ POST /api/objednavka – injektuje id_zakaznika z tokenu
+# 3) VLASTNÍ POST /api/objednavky – spočítá čas, body, slevu
 # ──────────────────────────────────────────────────────────────────────────────
-@api_bp.route("/objednavka", methods=["POST"])
+@api_bp.route("/objednavky", methods=["POST"])
 @jwt_required()
-@api_bp.arguments(ObjednavkaUserCreateSchema)
+@api_bp.arguments(ObjednavkaUserCreateSchema, location="json")
 @api_bp.response(201, ObjednavkaSchema)
-def create_objednavka(new_data):
-    # inject id_zakaznika z tokenu
-    new_data["id_zakaznika"] = int(get_jwt_identity())
-    objednavka = Objednavka(**new_data)
-    try:
-        db.session.add(objednavka)
-        db.session.commit()
-    except IntegrityError:
-        db.session.rollback()
-        abort(409, message="Duplicitní nebo neplatný záznam.")
-    return objednavka
+def create_order(order_data):
+    user_id        = int(get_jwt_identity())
+    items          = order_data["items"]
+    apply_discount = order_data.get("apply_discount", False)
+
+    # Načti položky menu
+    menu_ids   = [it["id_menu_polozka"] for it in items]
+    menu_items = {
+        m.id_menu_polozka: m for m in
+        db.session.query(PolozkaMenu)
+          .filter(PolozkaMenu.id_menu_polozka.in_(menu_ids))
+          .all()
+    }
+    if len(menu_items) != len(menu_ids):
+        abort(404, message="Některá položka nebyla nalezena.")
+
+    # Vypočti čas přípravy a body
+    prep_times   = []
+    total_points = 0
+    total_price  = 0
+    for it in items:
+        m = menu_items[it["id_menu_polozka"]]
+        prep_times.append(m.preparation_time)
+        total_points += m.points * it["mnozstvi"]
+        total_price  += m.cena * it["mnozstvi"]
+    prep_time = max(prep_times) if prep_times else 0
+
+    # Získej nebo vytvoř vernostní účet
+    account = db.session.query(VernostniUcet).filter_by(id_zakaznika=user_id).first()
+    if not account:
+        account = VernostniUcet(body=0, datum_zalozeni=date.today(), zakaznik_id=user_id)
+        db.session.add(account)
+        db.session.flush()
+
+    # Aplikuj slevu
+    discount_amount = 0
+    if apply_discount and account.body >= 400:
+        discount_amount = 200
+        account.body   -= 400
+
+    # Vytvoř objednávku
+    order = Objednavka(
+        id_zakaznika   = user_id,
+        cas_pripravy   = datetime.utcnow() + timedelta(minutes=prep_time),
+        body_ziskane   = total_points,
+        celkova_castka = total_price - discount_amount
+    )
+    db.session.add(order)
+    db.session.flush()
+
+    # Vytvoř položky objednávky
+    for it in items:
+        pi = PolozkaObjednavky(
+            mnozstvi     = it["mnozstvi"],
+            cena         = menu_items[it["id_menu_polozka"]].cena,
+            objednavka   = order,
+            menu_polozka = menu_items[it["id_menu_polozka"]]
+        )
+        db.session.add(pi)
+
+    # Přičti body za novou objednávku
+    account.body += total_points
+    db.session.add(account)
+
+    # Přidáme tyto tři hodnoty přímo na instanci
+    order.preparation_time = prep_time
+    order.body_ziskane     = total_points
+    order.discount_amount  = discount_amount
+
+    db.session.commit()
+    return order
 
 # ──────────────────────────────────────────────────────────────────────────────
 # VLASTNÍ ENDPOINTY PRO MENU
@@ -370,7 +422,7 @@ class MealPlansList(MethodView):
             db.select(JidelniPlan)
               .where(JidelniPlan.platny_od <= today)
               .where(
-                  (JidelniPlan.platny_do == None) |
+                  (JidelniPlan.platny_do.is_(None)) |
                   (JidelniPlan.platny_do >= today)
               )
         )
@@ -475,43 +527,54 @@ class RedeemPoints(MethodView):
         if ucet.body < points:
             abort(400, message="Nedostatek bodů.")
         ucet.body -= points
-        notif = Notifikace(
+
+        # Vytvoříme notifikaci bez zakaznik_id, jen s textem
+        note = Notifikace(
             typ="REDEEM",
             datum_cas=datetime.utcnow(),
-            text=f"Uplatněno {points} bodů.",
-            id_zakaznika=zakaznik_id
+            text=f"Uplatněno {points} bodů."
         )
-        db.session.add(notif)
+        db.session.add(note)
+        db.session.add(ucet)
         db.session.commit()
         return ucet
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Override POST /platba: ukládá platbu, přičítá body a vytváří notifikaci
 # ──────────────────────────────────────────────────────────────────────────────
-@api_bp.route('/platba', methods=['POST'])
+@api_bp.route("/platba", methods=["POST"])
 @jwt_required()
-@api_bp.arguments(PlatbaCreateSchema, location='json')
+@api_bp.arguments(PlatbaCreateSchema, location="json")
 @api_bp.response(201, PlatbaSchema)
 def create_platba_with_points(args):
     user_id = int(get_jwt_identity())
 
-    # 1) Vytvořím Platba
-    platba = Platba(zakaznik_id=user_id, **args)
+    # 1) Vytvořím platbu
+    platba = Platba(
+        castka=args["castka"],
+        typ_platby=args["typ_platby"],
+        datum=args["datum"],
+        id_objednavky=args["id_objednavky"]
+    )
     db.session.add(platba)
-    db.session.flush()  # vyplní platba.id
+    db.session.flush()  # vyplní platba.id_platba
 
     # 2) Spočítám a přičtu loyalty body (1 bod / 10 Kč)
-    earned = int(float(args['castka']) // 10)
-    ucet = VernostniUcet.query.filter_by(zakaznik_id=user_id).one()
+    earned = int(float(str(args["castka"])) // 10)
+    ucet = db.session.query(VernostniUcet).filter_by(id_zakaznika=user_id).one()
     ucet.body += earned
     db.session.add(ucet)
 
-    # 3) Vytvořím notifikaci
-    zprava = f"Platba #{platba.id} za {args['castka']} Kč úspěšná, získáno {earned} bodů."
-    note = Notifikace(zakaznik_id=user_id, text=zprava, datum_cas=datetime.utcnow())
+    # 3) Vytvořím notifikaci bez zakaznik_id, jen s textem a vazbou na objednavku
+    zprava = f"Platba #{platba.id_platba} za {args['castka']} Kč úspěšná, získáno {earned} bodů."
+    note = Notifikace(
+        typ="PLATBA",
+        datum_cas=datetime.utcnow(),
+        text=zprava,
+        id_objednavky=platba.id_platba
+    )
     db.session.add(note)
 
     # 4) Commit
     db.session.commit()
-
     return platba
