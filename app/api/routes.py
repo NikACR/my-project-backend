@@ -26,13 +26,16 @@ Principy a důležité body
 7. register_crud
    - Generuje CRUD endpointy automaticky.
 """
+import os
 from functools import wraps
+from datetime import datetime, date, timedelta
+
 from flask.views import MethodView
 from flask_smorest import abort
-from flask import request
+from flask import request, current_app
+from werkzeug.utils import secure_filename
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
-from datetime import datetime, date, timedelta
 from flask_jwt_extended import (
     jwt_required,
     get_jwt_identity,
@@ -349,13 +352,22 @@ class PolozkaMenuList(MethodView):
         return db.session.scalars(stmt).all()
 
     @jwt_required()
-    @api_bp.arguments(PolozkaMenuCreateSchema)
+    @api_bp.arguments(PolozkaMenuCreateSchema, location="form")
     @api_bp.response(201, PolozkaMenuSchema)
     def post(self, new_data):
+        # nový kód pro zpracování nahrání obrázku
+        file = request.files.get('obrazek')
+        obj = PolozkaMenu(**new_data)
+        if file:
+            filename = secure_filename(file.filename)
+            dest = os.path.join(current_app.root_path, 'static', 'images')
+            os.makedirs(dest, exist_ok=True)
+            file.save(os.path.join(dest, filename))
+            obj.obrazek_filename = filename
+
         roles = set(get_jwt().get("roles", []))
         if not roles.intersection({"staff", "admin"}):
             abort(403, message="Nemáte oprávnění vytvářet položky menu.")
-        obj = PolozkaMenu(**new_data)
         try:
             db.session.add(obj)
             db.session.commit()
@@ -382,15 +394,25 @@ class PolozkaMenuItem(MethodView):
         return obj
 
     @jwt_required()
-    @api_bp.arguments(PolozkaMenuSchema(partial=True))
+    @api_bp.arguments(PolozkaMenuCreateSchema(partial=True), location="form")
     @api_bp.response(200, PolozkaMenuSchema)
     def put(self, data, id_menu_polozka):
-        roles = set(get_jwt().get("roles", []))
-        if not roles.intersection({"staff", "admin"}):
-            abort(403, message="Nemáte oprávnění upravovat položky menu.")
         obj = db.session.get(PolozkaMenu, id_menu_polozka)
         if not obj:
             abort(404, message="Položka menu nenalezena.")
+
+        # nový kód pro zpracování nahrání/aktualizace obrázku
+        file = request.files.get('obrazek')
+        if file:
+            filename = secure_filename(file.filename)
+            dest = os.path.join(current_app.root_path, 'static', 'images')
+            os.makedirs(dest, exist_ok=True)
+            file.save(os.path.join(dest, filename))
+            obj.obrazek_filename = filename
+
+        roles = set(get_jwt().get("roles", []))
+        if not roles.intersection({"staff", "admin"}):
+            abort(403, message="Nemáte oprávnění upravovat položky menu.")
         for k, v in data.items():
             setattr(obj, k, v)
         db.session.commit()

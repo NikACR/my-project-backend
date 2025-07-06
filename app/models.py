@@ -254,7 +254,7 @@ class PolozkaMenu(db.Model):
     nazev           = db.Column(db.String(100), nullable=False)
     popis           = db.Column(db.Text,           nullable=True)
     cena            = db.Column(db.Numeric(8, 2),  nullable=False)
-    obrazek_url     = db.Column(db.String,         nullable=True)
+    obrazek_filename = db.Column(db.String, nullable=True)
     kategorie       = db.Column(db.String(20),     nullable=False)
     den             = db.Column(db.String(10),     nullable=False)
 

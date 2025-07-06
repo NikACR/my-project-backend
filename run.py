@@ -17,6 +17,9 @@ os.environ.setdefault("DATABASE_HOST", "localhost")
 config_name = os.getenv("FLASK_CONFIG", "default")
 app = create_app(config_name)
 
+# složka pro ukládání obrázků
+app.config['UPLOAD_FOLDER'] = os.path.join(app.root_path, 'static', 'images')
+
 
 def _vycistit_databazi():
     db.session.query(PolozkaMenuAlergen).delete()

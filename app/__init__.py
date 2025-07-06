@@ -1,4 +1,4 @@
-import os
+import os 
 import warnings
 from flask import Flask, jsonify, request
 from flask_smorest import Api
@@ -39,6 +39,14 @@ def create_app(config_name=None, config_override=None):
     else:
         app.config.from_object(config_by_name[config_name])
     app.config.setdefault("JSON_AS_ASCII", False)
+
+    # ─── NOVĚ: složka pro nahrávání obrázků ─────────────────────────────────
+    # nastavíme UPLOAD_FOLDER relativně k 'app/static/images'
+    upload_folder = os.path.join(app.root_path, 'static', 'images')
+    app.config['UPLOAD_FOLDER'] = upload_folder
+    # zajistíme, že složka existuje
+    os.makedirs(upload_folder, exist_ok=True)
+    # ────────────────────────────────────────────────────────────────────────────
 
     # povolíme CORS pro frontend na localhost:3000
     CORS(
@@ -90,8 +98,7 @@ def create_app(config_name=None, config_override=None):
     api.register_blueprint(api_bp)
     api.register_blueprint(auth_bp)
 
-    # ─── Idempotentní seed trvalých položek menu + alergenů
-    # seedování momentálně zakomentováno, aby bylo možné spouštět migrace bez chyb
+    # ─── Idempotentní seed trvalých položek menu + alergenů (zakomentováno) ─────
     """
     from .models import PolozkaMenu, Alergen, PolozkaMenuAlergen
 

@@ -1,5 +1,6 @@
 from marshmallow import Schema, fields, validate, validates_schema, ValidationError, post_dump
-
+from flask import url_for
+from .models import PolozkaMenu
 # — LOGIN schéma —
 class LoginSchema(Schema):
     email    = fields.Email(required=True)
@@ -267,16 +268,25 @@ class PolozkaMenuSchema(Schema):
     nazev           = fields.Str(required=True)
     popis           = fields.Str(load_default="", allow_none=False)
     cena            = fields.Decimal(as_string=True)
-    obrazek_url     = fields.Str()
+    # místo fields.Str() použít fields.Method, aby to vzalo hodnotu z obrazek_filename
+    obrazek_url     = fields.Method("get_obrazek_url", dump_only=True)
     kategorie       = fields.Str()
     den             = fields.Str(allow_none=True)
     alergeny        = fields.Method("get_alergeny", dump_only=True)
+
+    def get_obrazek_url(self, obj: PolozkaMenu):
+        # pokud není filename, vrať None
+        if not obj.obrazek_filename:
+            return None
+        # postav absolutní URL na static/images/<filename>
+        return url_for('static', filename=f'images/{obj.obrazek_filename}', _external=True)
 
     def get_alergeny(self, obj):
         return [
             {"id_alergenu": link.id_alergenu, "nazev": link.alergen.nazev}
             for link in obj.alergeny
         ]
+
 
 class PolozkaMenuCreateSchema(Schema):
     nazev           = fields.Str(required=True)
@@ -293,7 +303,6 @@ class PolozkaMenuCreateSchema(Schema):
                           ["Pondělí","Úterý","Středa","Čtvrtek","Pátek","Sobota","Neděle", None]
                         )
                      )
-
 # — Položka menu ↔ alergen —
 class PolozkaMenuAlergenSchema(Schema):
     id_menu_polozka = fields.Int(dump_only=True)
