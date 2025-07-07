@@ -394,7 +394,7 @@ class PolozkaMenuItem(MethodView):
         return obj
 
     @jwt_required()
-    @api_bp.response(204)
+    @api_bp.response(204, )
     def delete(self, id_menu_polozka):
         roles = set(get_jwt().get("roles", []))
         if not roles.intersection({"staff", "admin"}):
@@ -550,10 +550,14 @@ class RedeemPoints(MethodView):
 @api_bp.arguments(PlatbaCreateSchema, location="json")
 @api_bp.response(201, PlatbaSchema)
 def create_platba_with_points(args):
+    # necháme Marshmallow vrátit datetime, případné parsování jen pro str
+    raw = args["datum"]
+    dt  = raw if isinstance(raw, datetime) else datetime.fromisoformat(raw)
+
     platba = Platba(
         castka=args["castka"],
         typ_platby=args["typ_platby"],
-        datum=args["datum"],
+        datum=dt,
         id_objednavky=args["id_objednavky"]
     )
     db.session.add(platba)
