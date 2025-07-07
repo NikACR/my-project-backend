@@ -1,9 +1,11 @@
+# src/api/routes.py
+
 import os
 from functools import wraps
 from datetime import datetime, date, timedelta
 
 from flask.views import MethodView
-from flask import request, current_app
+from flask import request, current_app, jsonify
 from flask_smorest import abort
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
@@ -38,6 +40,7 @@ from ..schemas import (
 )
 from . import api_bp
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Dekorátory pro omezení přístupu
 # ──────────────────────────────────────────────────────────────────────────────
@@ -66,6 +69,7 @@ def must_own_reservation_or_admin(fn):
             abort(403, message="Nemáte oprávnění.")
         return fn(*args, **kwargs)
     return wrapper
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CRUD pro zákazníka
@@ -143,8 +147,9 @@ class ZakaznikItem(MethodView):
         db.session.commit()
         return ""
 
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Generický register_crud
+# Generický CRUD registrátor
 # ──────────────────────────────────────────────────────────────────────────────
 def register_crud(
     route_base, model, schema_cls, create_schema_cls, pk_name,
@@ -224,96 +229,137 @@ for base, model, sc, cc, pk in [
 ]:
     register_crud(base, model, sc, cc, pk)
 
+
 # ──────────────────────────────────────────────────────────────────────────────
-# POST /api/objednavky – spočítá cenu, body, čas + notifikace
+# GET + POST /objednavky – seznam a vytvoření objednávky
 # ──────────────────────────────────────────────────────────────────────────────
-@api_bp.route("/objednavky", methods=["POST"])
-@jwt_required()
-@api_bp.arguments(ObjednavkaUserCreateSchema, location="json")
-@api_bp.response(201, ObjednavkaSchema)
-def create_order(order_data):
-    user_id        = int(get_jwt_identity())
-    items          = order_data["items"]
-    apply_discount = order_data.get("apply_discount", False)
+@api_bp.route("/objednavky")
+class ObjednavkyResource(MethodView):
 
-    menu_ids   = [it["id_menu_polozka"] for it in items]
-    menu_items = {m.id_menu_polozka: m for m in
-                  db.session.query(PolozkaMenu)
-                    .filter(PolozkaMenu.id_menu_polozka.in_(menu_ids))
-                    .all()}
-    if len(menu_items) != len(menu_ids):
-        abort(404, message="Některá položka nebyla nalezena.")
+    @jwt_required()
+    @api_bp.response(200, ObjednavkaSchema(many=True))
+    def get(self):
+        user_id = int(get_jwt_identity())
+        roles   = set(get_jwt().get("roles", []))
 
-    # výpočet ceny, bodů a přípravy podle množství
-    total_price    = 0.0
-    total_points   = 0
-    max_prep_time  = 0
-    max_prep_count = 0
+        if roles.intersection({"staff", "admin"}):
+            objednavky = db.session.scalars(db.select(Objednavka)).all()
+        else:
+            objednavky = db.session.scalars(
+                db.select(Objednavka)
+                  .where(Objednavka.id_zakaznika == user_id)
+            ).all()
 
-    for it in items:
-        m = menu_items[it["id_menu_polozka"]]
-        mnozstvi = it.get("mnozstvi", 1)
-        total_price  += float(m.cena) * mnozstvi
-        total_points += m.points * mnozstvi
-        # zjistí nejdelší přípravu a počet kusů té položky
-        if m.preparation_time > max_prep_time:
-            max_prep_time  = m.preparation_time
-            max_prep_count = mnozstvi
+        now    = datetime.utcnow()
+        result = []
 
-    # celková doba = nejdelší příprava * počet kusů
-    prep_minutes = max_prep_time * max_prep_count if max_prep_time and max_prep_count else 0
+        for o in objednavky:
+            paid = db.session.query(Platba).filter_by(id_objednavky=o.id_objednavky).first()
+            stav = (
+                "Čeká na platbu"
+                if not paid else
+                ("Ve zpracování" if (o.cas_pripravy and now < o.cas_pripravy) else "Hotovo")
+            )
+            result.append({
+                "id_objednavky":  o.id_objednavky,
+                "stav":           stav,
+                "celkova_castka": float(o.celkova_castka),
+                "body_ziskane":   o.body_ziskane,
+                "cas_pripravy":   o.cas_pripravy.isoformat() if o.cas_pripravy else None
+            })
 
-    # vernostní účet
-    account = db.session.query(VernostniUcet).filter_by(id_zakaznika=user_id).first()
-    if not account:
-        account = VernostniUcet(body=0, datum_zalozeni=date.today(), zakaznik_id=user_id)
-        db.session.add(account)
+        return jsonify(result), 200
+
+    @jwt_required()
+    @api_bp.arguments(ObjednavkaUserCreateSchema, location="json")
+    @api_bp.response(201, ObjednavkaSchema)
+    def post(self, order_data):
+        user_id        = int(get_jwt_identity())
+        items          = order_data["items"]
+        apply_discount = order_data.get("apply_discount", False)
+
+        # načtení menu položek
+        menu_ids   = [it["id_menu_polozka"] for it in items]
+        menu_items = {
+            m.id_menu_polozka: m
+            for m in db.session.query(PolozkaMenu)
+                           .filter(PolozkaMenu.id_menu_polozka.in_(menu_ids))
+                           .all()
+        }
+        if len(menu_items) != len(menu_ids):
+            abort(404, message="Některá položka nebyla nalezena.")
+
+        # výpočet ceny, bodů a času
+        total_price    = 0.0
+        total_points   = 0
+        max_prep_time  = 0
+        max_prep_count = 0
+        for it in items:
+            m   = menu_items[it["id_menu_polozka"]]
+            qty = it.get("mnozstvi", 1)
+            total_price  += float(m.cena) * qty
+            total_points += m.points * qty
+            if m.preparation_time > max_prep_time:
+                max_prep_time  = m.preparation_time
+                max_prep_count = qty
+
+        prep_minutes = max_prep_time * max_prep_count if max_prep_time and max_prep_count else 0
+
+        # vernostní účet
+        account = (db.session.query(VernostniUcet)
+                         .filter_by(id_zakaznika=user_id)
+                         .with_for_update()
+                         .one_or_none())
+        if not account:
+            account = VernostniUcet(body=0, datum_zalozeni=date.today(), zakaznik_id=user_id)
+            db.session.add(account)
+            db.session.flush()
+
+        # sleva
+        discount_amount = 0
+        if apply_discount and account.body >= 400:
+            discount_amount = 200
+            account.body   -= 400
+
+        objednavka = Objednavka(
+            id_zakaznika   = user_id,
+            cas_pripravy   = datetime.utcnow() + timedelta(minutes=prep_minutes),
+            body_ziskane   = (total_points if not apply_discount else 0),
+            celkova_castka = total_price - discount_amount
+        )
+        db.session.add(objednavka)
         db.session.flush()
 
-    # sleva
-    discount_amount = 0
-    if apply_discount and account.body >= 400:
-        discount_amount = 200
-        account.body   -= 400
+        # položky objednávky
+        for it in items:
+            polo = menu_items[it["id_menu_polozka"]]
+            pi   = PolozkaObjednavky(
+                mnozstvi     = it.get("mnozstvi", 1),
+                cena         = polo.cena,
+                objednavka   = objednavka,
+                menu_polozka = polo
+            )
+            db.session.add(pi)
 
-    objednavka = Objednavka(
-        id_zakaznika   = user_id,
-        cas_pripravy   = datetime.utcnow() + timedelta(minutes=prep_minutes),
-        body_ziskane   = total_points if not apply_discount else 0,
-        celkova_castka = total_price - discount_amount
-    )
-    db.session.add(objednavka)
-    db.session.flush()
+        # přičtení bodů
+        if not apply_discount:
+            account.body += total_points
+        db.session.add(account)
+        db.session.commit()
 
-    # položky
-    for it in items:
-        polo = menu_items[it["id_menu_polozka"]]
-        pi = PolozkaObjednavky(
-            mnozstvi     = it.get("mnozstvi", 1),
-            cena         = polo.cena,
-            objednavka   = objednavka,
-            menu_polozka = polo
+        # notifikace
+        notif = Notifikace(
+            typ="OBJEDNAVKA_VYTVOŘENA",
+            datum_cas=datetime.utcnow(),
+            text=f"Objednávka č. {objednavka.id_objednavky} byla vytvořena.",
+            id_objednavky=objednavka.id_objednavky,
+            id_zakaznika=user_id
         )
-        db.session.add(pi)
+        db.session.add(notif)
+        db.session.commit()
 
-    # přičtení bodů
-    if not apply_discount:
-        account.body += total_points
-    db.session.add(account)
-    db.session.commit()
+        return objednavka
 
-    # notifikace
-    notif = Notifikace(
-        typ="OBJEDNAVKA_VYTVOŘENA",
-        datum_cas=datetime.utcnow(),
-        text=f"Objednávka č. {objednavka.id_objednavky} byla vytvořena.",
-        id_objednavky=objednavka.id_objednavky,
-        id_zakaznika=user_id
-    )
-    db.session.add(notif)
-    db.session.commit()
-
-    return objednavka
 
 # ──────────────────────────────────────────────────────────────────────────────
 # MENU endpoints
@@ -322,13 +368,9 @@ def create_order(order_data):
 class PolozkaMenuList(MethodView):
     @api_bp.response(200, PolozkaMenuSchema(many=True))
     def get(self):
-        stmt = (
-            db.select(PolozkaMenu)
-              .options(
-                  selectinload(PolozkaMenu.alergeny)
-                    .selectinload(PolozkaMenuAlergen.alergen)
-              )
-        )
+        stmt = (db.select(PolozkaMenu)
+                  .options(selectinload(PolozkaMenu.alergeny)
+                           .selectinload(PolozkaMenuAlergen.alergen)))
         return db.session.scalars(stmt).all()
 
     @jwt_required()
@@ -358,14 +400,10 @@ class PolozkaMenuList(MethodView):
 class PolozkaMenuItem(MethodView):
     @api_bp.response(200, PolozkaMenuSchema)
     def get(self, id_menu_polozka):
-        stmt = (
-            db.select(PolozkaMenu)
-              .options(
-                  selectinload(PolozkaMenu.alergeny)
-                    .selectinload(PolozkaMenuAlergen.alergen)
-              )
-              .where(PolozkaMenu.id_menu_polozka == id_menu_polozka)
-        )
+        stmt = (db.select(PolozkaMenu)
+                  .options(selectinload(PolozkaMenu.alergeny)
+                           .selectinload(PolozkaMenuAlergen.alergen))
+                  .where(PolozkaMenu.id_menu_polozka == id_menu_polozka))
         obj = db.session.scalars(stmt).first()
         if not obj:
             abort(404, message="Položka menu nenalezena.")
@@ -394,7 +432,7 @@ class PolozkaMenuItem(MethodView):
         return obj
 
     @jwt_required()
-    @api_bp.response(204, )
+    @api_bp.response(204)
     def delete(self, id_menu_polozka):
         roles = set(get_jwt().get("roles", []))
         if not roles.intersection({"staff", "admin"}):
@@ -406,6 +444,7 @@ class PolozkaMenuItem(MethodView):
         db.session.commit()
         return ""
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 # MEAL-PLANS endpoints
 # ──────────────────────────────────────────────────────────────────────────────
@@ -415,12 +454,10 @@ class MealPlansList(MethodView):
     @api_bp.response(200, JidelniPlanSchema(many=True))
     def get(self):
         today = date.today()
-        stmt = (
-            db.select(JidelniPlan)
-              .where(JidelniPlan.platny_od <= today)
-              .where((JidelniPlan.platny_do.is_(None)) |
-                     (JidelniPlan.platny_do >= today))
-        )
+        stmt = (db.select(JidelniPlan)
+                  .where(JidelniPlan.platny_od <= today)
+                  .where((JidelniPlan.platny_do.is_(None)) |
+                         (JidelniPlan.platny_do >= today)))
         return db.session.scalars(stmt).all()
 
 @api_bp.route("/meal-plans/<int:id_plan>")
@@ -433,6 +470,7 @@ class MealPlanItem(MethodView):
             abort(404, message="Jídelní plán nenalezen.")
         return plan
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 # REZERVACE endpoints
 # ──────────────────────────────────────────────────────────────────────────────
@@ -442,10 +480,10 @@ class RezervaceList(MethodView):
     @api_bp.response(200, RezervaceSchema(many=True))
     def get(self):
         current_id = int(get_jwt_identity())
-        roles = set(get_jwt().get("roles", []))
+        roles      = set(get_jwt().get("roles", []))
         stmt = (db.select(Rezervace)
-                  if roles.intersection({"staff", "admin"})
-                  else db.select(Rezervace).where(Rezervace.id_zakaznika == current_id))
+                    if roles.intersection({"staff", "admin"})
+                    else db.select(Rezervace).where(Rezervace.id_zakaznika == current_id))
         return db.session.scalars(stmt).all()
 
     @jwt_required()
@@ -500,6 +538,7 @@ class RezervaceItem(MethodView):
         db.session.commit()
         return ""
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 # USERS/me/points endpoint
 # ──────────────────────────────────────────────────────────────────────────────
@@ -509,10 +548,11 @@ class MyPoints(MethodView):
     @api_bp.response(200, VernostniUcetSchema)
     def get(self):
         zak_id = int(get_jwt_identity())
-        ucet = db.session.query(VernostniUcet).filter_by(id_zakaznika=zak_id).one_or_none()
+        ucet   = db.session.query(VernostniUcet).filter_by(id_zakaznika=zak_id).one_or_none()
         if not ucet:
             abort(404, message="Účet nenalezen.")
         return ucet
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # USERS/me/redeem endpoint
@@ -524,7 +564,7 @@ class RedeemPoints(MethodView):
     @api_bp.response(200, VernostniUcetSchema)
     def post(self, data):
         zak_id = int(get_jwt_identity())
-        ucet = db.session.query(VernostniUcet).filter_by(id_zakaznika=zak_id).with_for_update().one_or_none()
+        ucet   = db.session.query(VernostniUcet).filter_by(id_zakaznika=zak_id).with_for_update().one_or_none()
         if not ucet:
             abort(404, message="Účet nenalezen.")
         points = data.get("points", 0)
@@ -542,6 +582,7 @@ class RedeemPoints(MethodView):
         db.session.commit()
         return ucet
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 # POST /platba – ukládá platbu a vytváří notifikaci
 # ──────────────────────────────────────────────────────────────────────────────
@@ -550,10 +591,8 @@ class RedeemPoints(MethodView):
 @api_bp.arguments(PlatbaCreateSchema, location="json")
 @api_bp.response(201, PlatbaSchema)
 def create_platba_with_points(args):
-    # necháme Marshmallow vrátit datetime, případné parsování jen pro str
     raw = args["datum"]
     dt  = raw if isinstance(raw, datetime) else datetime.fromisoformat(raw)
-
     platba = Platba(
         castka=args["castka"],
         typ_platby=args["typ_platby"],
@@ -563,8 +602,8 @@ def create_platba_with_points(args):
     db.session.add(platba)
     db.session.flush()
     zprava = f"Platba #{platba.id_platba} za {args['castka']} Kč úspěšná."
-    objed = db.session.get(Objednavka, platba.id_objednavky)
-    note = Notifikace(
+    objed  = db.session.get(Objednavka, platba.id_objednavky)
+    note   = Notifikace(
         typ="PLATBA",
         datum_cas=datetime.utcnow(),
         text=zprava,
@@ -575,6 +614,7 @@ def create_platba_with_points(args):
     db.session.commit()
     return platba
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 # USERS/me/notifications endpoint
 # ──────────────────────────────────────────────────────────────────────────────
@@ -584,10 +624,8 @@ class MyNotifications(MethodView):
     @api_bp.response(200, NotifikaceSchema(many=True))
     def get(self):
         zak_id = int(get_jwt_identity())
-        notifs = (
-            db.session.query(Notifikace)
-              .filter_by(id_zakaznika=zak_id)
-              .order_by(Notifikace.datum_cas.desc())
-              .all()
-        )
+        notifs = (db.session.query(Notifikace)
+                     .filter_by(id_zakaznika=zak_id)
+                     .order_by(Notifikace.datum_cas.desc())
+                     .all())
         return notifs
