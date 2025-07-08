@@ -24,9 +24,9 @@ class ObjednavkaSummarySchema(Schema):
     id_objednavky    = fields.Int()
     datum_cas        = fields.DateTime()
     stav             = fields.Str()
-    preparation_time = fields.Int()  # nejdelší čas přípravy v minutách
-    body_ziskane     = fields.Int()  # získané body
-    discount_amount  = fields.Int()  # uplatněná sleva
+    preparation_time = fields.Int()
+    body_ziskane     = fields.Int()
+    discount_amount  = fields.Int()
 
 class HodnoceniSummarySchema(Schema):
     id_hodnoceni = fields.Int()
@@ -38,7 +38,6 @@ class PlatbaSummarySchema(Schema):
     castka       = fields.Decimal(as_string=True)
     typ_platby   = fields.Str()
     datum        = fields.DateTime()
-    # Po úpravě body se vrací jen v objednávce
 
 class PolozkaObjednavkySummarySchema(Schema):
     id_polozky_obj = fields.Int()
@@ -57,7 +56,14 @@ class PodnikovaAkceSummarySchema(Schema):
     datum   = fields.Date()
     cas     = fields.Time()
 
-# — Položka objednávky (pro POST v ObjednavkaUserCreateSchema) —
+class WorkshopSummarySchema(Schema):
+    id_workshop = fields.Int()
+    nazev       = fields.Str()
+    cena        = fields.Decimal(as_string=True)
+    kapacita    = fields.Int()
+    cas_konani  = fields.DateTime()
+
+# — Položka objednávky (pro POST) —
 class PolozkaObjednavkyCreateSchema(Schema):
     id_menu_polozka = fields.Int(required=True)
     mnozstvi        = fields.Int(required=True, validate=validate.Range(min=1))
@@ -91,7 +97,7 @@ class ZakaznikSchema(Schema):
         return data
 
     def get_roles(self, obj):
-        mapping = {"user": "Uživatel", "staff": "Pracovník", "admin": "Administrátor"}
+        mapping = {"user":"Uživatel","staff":"Pracovník","admin":"Administrátor"}
         return [mapping.get(r.name, r.name) for r in obj.roles]
 
 class ZakaznikCreateSchema(Schema):
@@ -125,6 +131,7 @@ class RezervaceSchema(Schema):
     stul           = fields.Nested("StulSchema", dump_only=True, allow_none=True)
     salonek        = fields.Nested("SalonekSchema", dump_only=True, allow_none=True)
     akce           = fields.Nested(PodnikovaAkceSummarySchema, dump_only=True, allow_none=True)
+    workshop       = fields.Nested(WorkshopSummarySchema, dump_only=True, allow_none=True)
     notifikace     = fields.Nested(NotifikaceSummarySchema, many=True, dump_only=True)
 
     @post_dump
@@ -135,6 +142,8 @@ class RezervaceSchema(Schema):
             data["salonek"] = "Žádný salónek"
         if data.get("akce") is None:
             data["akce"] = "Žádná akce"
+        if data.get("workshop") is None:
+            data["workshop"] = "Žádný workshop"
         if not data.get("notifikace"):
             data["notifikace"] = "Žádné notifikace"
         return data
@@ -148,13 +157,14 @@ class RezervaceCreateSchema(Schema):
     id_stul        = fields.Int(allow_none=True)
     id_salonek     = fields.Int(allow_none=True)
     id_akce        = fields.Int(allow_none=True)
+    id_workshop    = fields.Int(allow_none=True)
 
     @validates_schema
     def require_place(self, data, **kwargs):
-        if not data.get("id_stul") and not data.get("id_salonek") and not data.get("id_akce"):
+        if not any(data.get(k) for k in ("id_stul","id_salonek","id_akce","id_workshop")):
             raise ValidationError(
-                "Musíte vyplnit buď 'id_stul', 'id_salonek' nebo 'id_akce'.",
-                field_names=["id_stul", "id_salonek", "id_akce"]
+                "Musíte vyplnit buď 'id_stul', 'id_salonek', 'id_akce' nebo 'id_workshop'.",
+                field_names=["id_stul","id_salonek","id_akce","id_workshop"]
             )
 
 # — Stůl —
@@ -167,45 +177,85 @@ class StulSchema(Schema):
 
 class StulCreateSchema(Schema):
     cislo    = fields.Int(required=True)
-    kapacita = fields.Int(required=True)
+    kapacita = fields.Int(required=True, validate=validate.Range(min=1, error="Kapacita musí být kladné číslo"))
     popis    = fields.Str()
 
 # — Salonek —
 class SalonekSchema(Schema):
-    id_salonek = fields.Int(dump_only=True)
-    nazev      = fields.Str()
-    kapacita   = fields.Int()
-    popis      = fields.Str()
-    rezervace  = fields.Nested(RezervaceSummarySchema, many=True, dump_only=True)
-    akce       = fields.Nested(PodnikovaAkceSummarySchema, many=True, dump_only=True)
+    id_salonek    = fields.Int(dump_only=True)
+    nazev         = fields.Str()
+    popis         = fields.Str()
+    cena          = fields.Decimal(as_string=True)
+    kapacita      = fields.Int()
+    obrazek_url   = fields.Method("get_image_url", dump_only=True)
+    rezervace     = fields.Nested(RezervaceSummarySchema, many=True, dump_only=True)
+    akce          = fields.Nested(PodnikovaAkceSummarySchema, many=True, dump_only=True)
+
+    def get_image_url(self, obj):
+        if not obj.obrazek_filename:
+            return None
+        return url_for('static', filename=f'images/{obj.obrazek_filename}', _external=True)
 
 class SalonekCreateSchema(Schema):
     nazev    = fields.Str(required=True)
-    kapacita = fields.Int(required=True)
     popis    = fields.Str()
+    cena     = fields.Decimal(as_string=True, required=True, validate=validate.Range(min=0))
+    kapacita = fields.Int(required=True, validate=validate.Range(min=1))
 
 # — Podniková akce —
 class PodnikovaAkceSchema(Schema):
-    id_akce = fields.Int(dump_only=True)
-    nazev   = fields.Str()
-    popis   = fields.Str()
-    datum   = fields.Date()
-    cas     = fields.Time()
-    salonek = fields.Nested(SalonekSchema, dump_only=True)
+    id_akce     = fields.Int(dump_only=True)
+    nazev       = fields.Str()
+    popis       = fields.Str()
+    cena        = fields.Decimal(as_string=True)
+    kapacita    = fields.Int()
+    obrazek_url = fields.Method("get_image_url", dump_only=True)
+    datum       = fields.Date()
+    cas         = fields.Time()
+    salonek     = fields.Nested(SalonekSchema, dump_only=True)
+
+    def get_image_url(self, obj):
+        if not obj.obrazek_filename:
+            return None
+        return url_for('static', filename=f'images/{obj.obrazek_filename}', _external=True)
 
 class PodnikovaAkceCreateSchema(Schema):
+    nazev     = fields.Str(required=True)
+    popis     = fields.Str()
+    cena      = fields.Decimal(as_string=True, required=True, validate=validate.Range(min=0))
+    kapacita  = fields.Int(required=True, validate=validate.Range(min=1))
+    datum     = fields.Date(required=True)
+    cas       = fields.Time(required=True)
+    id_salonek= fields.Int(required=True)
+
+# — Workshop —
+class WorkshopSchema(Schema):
+    id_workshop = fields.Int(dump_only=True)
+    nazev       = fields.Str()
+    popis       = fields.Str()
+    cena        = fields.Decimal(as_string=True)
+    kapacita    = fields.Int()
+    obrazek_url = fields.Method("get_image_url", dump_only=True)
+    cas_konani  = fields.DateTime()
+    rezervace   = fields.Nested(RezervaceSummarySchema, many=True, dump_only=True)
+
+    def get_image_url(self, obj):
+        if not obj.obrazek_filename:
+            return None
+        return url_for('static', filename=f'images/{obj.obrazek_filename}', _external=True)
+
+class WorkshopCreateSchema(Schema):
     nazev      = fields.Str(required=True)
     popis      = fields.Str()
-    datum      = fields.Date(required=True)
-    cas        = fields.Time(required=True)
-    id_salonek = fields.Int(required=True)
+    cena       = fields.Decimal(as_string=True, required=True, validate=validate.Range(min=0))
+    kapacita   = fields.Int(required=True, validate=validate.Range(min=1))
+    cas_konani = fields.DateTime(required=True)
 
 # — Objednávka —
 class ObjednavkaSchema(Schema):
     id_objednavky   = fields.Int(dump_only=True)
     datum_cas       = fields.DateTime(dump_only=True)
     stav            = fields.Str(dump_only=True)
-    # Vracíme čas přípravy jako počet minut z atributu `preparation_time`
     cas_pripravy    = fields.Int(attribute="preparation_time", dump_only=True)
     body_ziskane    = fields.Int(dump_only=True)
     discount_amount = fields.Int(dump_only=True)
@@ -232,7 +282,6 @@ class PolozkaObjednavkySchema(Schema):
     cena           = fields.Decimal(as_string=True)
     menu_polozka   = fields.Nested("PolozkaMenuSchema", dump_only=True)
 
-# — Platba —
 class PlatbaSchema(Schema):
     id_platba    = fields.Int(dump_only=True)
     castka       = fields.Decimal(as_string=True)
@@ -246,7 +295,6 @@ class PlatbaCreateSchema(Schema):
     typ_platby    = fields.Str(required=True, validate=validate.OneOf(["hotove","kartou"]))
     datum         = fields.DateTime(required=True)
 
-# — Hodnocení —
 class HodnoceniSchema(Schema):
     id_hodnoceni = fields.Int(dump_only=True)
     hodnoceni    = fields.Int()
@@ -288,17 +336,14 @@ class PolozkaMenuCreateSchema(Schema):
     nazev           = fields.Str(required=True)
     popis           = fields.Str(load_default="", allow_none=False)
     cena            = fields.Decimal(as_string=True, required=True)
-    obrazek_url     = fields.Url(required=True)
-    kategorie       = fields.Str(
-        required=True,
-        validate=validate.OneOf(["týdenní","víkendové","stálá nabídka"])
-    )
+    kategorie       = fields.Str(required=True, validate=validate.OneOf(["týdenní","víkendové","stálá nabídka"]))
     den             = fields.Str(
-        allow_none=True,
-        validate=validate.OneOf([
-            "Pondělí","Úterý","Středa","Čtvrtek","Pátek","Sobota","Neděle", None
-        ])
-    )
+                        allow_none=True,
+                        validate=validate.OneOf([
+                            "Pondělí","Úterý","Středa","Čtvrtek","Pátek","Sobota","Neděle", None
+                        ])
+                     )
+# obrázek se opět bere v route z request.files['obrazek']
 
 # — Položka menu ↔ alergen —
 class PolozkaMenuAlergenSchema(Schema):
@@ -311,11 +356,11 @@ class PolozkaMenuAlergenCreateSchema(Schema):
 
 # — Jídelní plán —
 class JidelniPlanSchema(Schema):
-    id_plan    = fields.Int(dump_only=True)
-    nazev      = fields.Str()
-    platny_od  = fields.Date()
-    platny_do  = fields.Date()
-    polozky    = fields.Nested("PolozkaJidelnihoPlanuSummarySchema", many=True, dump_only=True)
+    id_plan   = fields.Int(dump_only=True)
+    nazev     = fields.Str()
+    platny_od = fields.Date()
+    platny_do = fields.Date()
+    polozky   = fields.Nested("PolozkaJidelnihoPlanuSummarySchema", many=True, dump_only=True)
 
 class JidelniPlanCreateSchema(Schema):
     nazev     = fields.Str(required=True)
@@ -368,9 +413,9 @@ class NotifikaceCreateSchema(Schema):
 
 # — Role / RBAC schémata —
 class RoleSchema(Schema):
-    id_role    = fields.Int(dump_only=True)
-    name       = fields.Str(required=True)
-    description= fields.Str(allow_none=True)
+    id_role     = fields.Int(dump_only=True)
+    name        = fields.Str(required=True)
+    description = fields.Str(allow_none=True)
 
 class UserRoleAssignSchema(Schema):
     role_id    = fields.Int(required=True)

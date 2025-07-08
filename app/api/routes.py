@@ -1,23 +1,23 @@
-# src/api/routes.py
-
 import os
 from functools import wraps
 from datetime import datetime, date, timedelta
 
 from flask.views import MethodView
-from flask import request, current_app, jsonify
+from flask import request, current_app, jsonify, url_for
 from flask_smorest import abort
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
+from sqlalchemy import func
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from werkzeug.utils import secure_filename
 
 from ..db import db
 from ..models import (
     Zakaznik, VernostniUcet, Stul, Salonek, PodnikovaAkce,
+    Workshop, Rezervace, Notifikace,
     Objednavka, PolozkaObjednavky, Platba, Hodnoceni,
     PolozkaMenu, PolozkaMenuAlergen, JidelniPlan,
-    PolozkaJidelnihoPlanu, Alergen, Notifikace, Rezervace, Role
+    PolozkaJidelnihoPlanu, Alergen, Role
 )
 from ..schemas import (
     ZakaznikSchema, ZakaznikCreateSchema,
@@ -25,12 +25,12 @@ from ..schemas import (
     StulSchema, StulCreateSchema,
     SalonekSchema, SalonekCreateSchema,
     PodnikovaAkceSchema, PodnikovaAkceCreateSchema,
+    WorkshopSchema, WorkshopCreateSchema,
     ObjednavkaSchema, ObjednavkaUserCreateSchema,
     PolozkaObjednavkySchema, PolozkaObjednavkyCreateSchema,
     PlatbaSchema, PlatbaCreateSchema,
     HodnoceniSchema, HodnoceniCreateSchema,
     PolozkaMenuSchema, PolozkaMenuCreateSchema,
-    PolozkaMenuAlergenSchema, PolozkaMenuAlergenCreateSchema,
     JidelniPlanSchema, JidelniPlanCreateSchema,
     PolozkaJidelnihoPlanuSchema, PolozkaJidelnihoPlanuCreateSchema,
     AlergenSchema, AlergenCreateSchema,
@@ -40,6 +40,20 @@ from ..schemas import (
 )
 from . import api_bp
 
+# ──────────────────────────────────────────────────────────────────────────────
+# HELPER: Kontrola dostupnosti stolu
+# ──────────────────────────────────────────────────────────────────────────────
+def is_table_available(table_id, dt, persons):
+    table = db.session.get(Stul, table_id)
+    if not table:
+        abort(404, message="Stůl nenalezen.")
+    occupied = db.session.query(
+        func.coalesce(func.sum(Rezervace.pocet_osob), 0)
+    ).filter_by(
+        id_stul=table_id,
+        datum_cas=dt
+    ).scalar()
+    return (occupied + persons) <= table.kapacita
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Dekorátory pro omezení přístupu
@@ -49,9 +63,9 @@ def must_be_self_or_admin(param_name="id_zakaznika"):
         @wraps(fn)
         def wrapper(*args, **kwargs):
             current_id = int(get_jwt_identity())
-            roles = set(get_jwt().get("roles", []))
-            target_id = int(kwargs.get(param_name))
-            if current_id != target_id and not roles.intersection({"staff", "admin"}):
+            roles      = set(get_jwt().get("roles", []))
+            target_id  = int(kwargs.get(param_name))
+            if current_id != target_id and not roles.intersection({"staff","admin"}):
                 abort(403, message="Nemáte oprávnění.")
             return fn(*args, **kwargs)
         return wrapper
@@ -61,15 +75,14 @@ def must_own_reservation_or_admin(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
         current_id = int(get_jwt_identity())
-        roles = set(get_jwt().get("roles", []))
-        rez = db.session.get(Rezervace, kwargs.get("id_rezervace"))
+        roles      = set(get_jwt().get("roles", []))
+        rez        = db.session.get(Rezervace, kwargs.get("id_rezervace"))
         if not rez:
             abort(404, message="Rezervace nenalezena.")
-        if rez.id_zakaznika != current_id and not roles.intersection({"staff", "admin"}):
+        if rez.id_zakaznika != current_id and not roles.intersection({"staff","admin"}):
             abort(403, message="Nemáte oprávnění.")
         return fn(*args, **kwargs)
     return wrapper
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # CRUD pro zákazníka
@@ -79,11 +92,11 @@ class ZakaznikList(MethodView):
     @jwt_required()
     @api_bp.response(200, ZakaznikSchema(many=True))
     def get(self):
-        roles = set(get_jwt().get("roles", []))
-        if not roles.intersection({"staff", "admin"}):
+        roles       = set(get_jwt().get("roles", []))
+        if not roles.intersection({"staff","admin"}):
             abort(403, message="Nemáte oprávnění zobrazit všechny zákazníky.")
         role_filter = request.args.get("role")
-        stmt = db.select(Zakaznik)
+        stmt        = db.select(Zakaznik)
         if role_filter:
             stmt = stmt.join(Zakaznik.roles).where(Role.name == role_filter)
         return db.session.scalars(stmt).all()
@@ -93,9 +106,9 @@ class ZakaznikList(MethodView):
     @api_bp.response(201, ZakaznikSchema)
     def post(self, new_data):
         roles = set(get_jwt().get("roles", []))
-        if not roles.intersection({"staff", "admin"}):
+        if not roles.intersection({"staff","admin"}):
             abort(403, message="Nemáte oprávnění vytvářet zákazníky.")
-        zak = Zakaznik(**new_data)
+        zak       = Zakaznik(**new_data)
         user_role = db.session.query(Role).filter_by(name="user").one()
         zak.roles.append(user_role)
         try:
@@ -115,8 +128,8 @@ class ZakaznikItem(MethodView):
     @api_bp.response(200, ZakaznikSchema)
     def get(self, id_zakaznika):
         current_id = int(get_jwt_identity())
-        roles = set(get_jwt().get("roles", []))
-        if current_id != id_zakaznika and not roles.intersection({"staff", "admin"}):
+        roles      = set(get_jwt().get("roles", []))
+        if current_id != id_zakaznika and not roles.intersection({"staff","admin"}):
             abort(403, message="Nemáte oprávnění zobrazit tohoto zákazníka.")
         zak = db.session.get(Zakaznik, id_zakaznika)
         if not zak:
@@ -146,7 +159,6 @@ class ZakaznikItem(MethodView):
         db.session.delete(zak)
         db.session.commit()
         return ""
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Generický CRUD registrátor
@@ -219,45 +231,258 @@ def register_crud(
             db.session.commit()
             return ""
 
+# ──────────────────────────────────────────────────────────────────────────────
 # CRUD pro základní entity
+# ──────────────────────────────────────────────────────────────────────────────
 for base, model, sc, cc, pk in [
-    ('ucet', VernostniUcet, VernostniUcetSchema, VernostniUcetCreateSchema, 'id_ucet'),
-    ('stul', Stul, StulSchema, StulCreateSchema, 'id_stul'),
-    ('salonek', Salonek, SalonekSchema, SalonekCreateSchema, 'id_salonek'),
-    ('akce', PodnikovaAkce, PodnikovaAkceSchema, PodnikovaAkceCreateSchema, 'id_akce'),
-    ('alergen', Alergen, AlergenSchema, AlergenCreateSchema, 'id_alergenu'),
+    ('ucet',      VernostniUcet,       VernostniUcetSchema,      VernostniUcetCreateSchema,      'id_ucet'),
+    ('stul',      Stul,                 StulSchema,                StulCreateSchema,                'id_stul'),
+    # salonek, akce, workshop registrujeme zvlášť níže kvůli obrázkům
+    ('menu',      PolozkaMenu,          PolozkaMenuSchema,         PolozkaMenuCreateSchema,         'id_menu_polozka'),
+    ('alergen',   Alergen,              AlergenSchema,             AlergenCreateSchema,             'id_alergenu'),
+    ('meal-plans',JidelniPlan,          JidelniPlanSchema,         JidelniPlanCreateSchema,         'id_plan'),
 ]:
     register_crud(base, model, sc, cc, pk)
 
+# ──────────────────────────────────────────────────────────────────────────────
+# SALONEK endpoints (s obrázkem)
+# ──────────────────────────────────────────────────────────────────────────────
+@api_bp.route("/salonek")
+class SalonekList(MethodView):
+    @jwt_required()
+    @api_bp.response(200, SalonekSchema(many=True))
+    def get(self):
+        return db.session.scalars(db.select(Salonek)).all()
+
+    @jwt_required()
+    @api_bp.arguments(SalonekCreateSchema, location="form")
+    @api_bp.response(201, SalonekSchema)
+    def post(self, new_data):
+        file = request.files.get('obrazek')
+        obj  = Salonek(**new_data)
+        if file:
+            filename = secure_filename(file.filename)
+            dest     = os.path.join(current_app.root_path, 'static', 'images')
+            os.makedirs(dest, exist_ok=True)
+            file.save(os.path.join(dest, filename))
+            obj.obrazek_filename = filename
+        roles = set(get_jwt().get("roles", []))
+        if not roles.intersection({"staff","admin"}):
+            abort(403, message="Nemáte oprávnění vytvářet salonek.")
+        try:
+            db.session.add(obj)
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            abort(409, message="Duplicitní nebo neplatný záznam.")
+        return obj
+
+@api_bp.route("/salonek/<int:id_salonek>")
+class SalonekItem(MethodView):
+    @jwt_required()
+    @api_bp.response(200, SalonekSchema)
+    def get(self, id_salonek):
+        obj = db.session.get(Salonek, id_salonek)
+        if not obj:
+            abort(404, message="Salonek nenalezen.")
+        return obj
+
+    @jwt_required()
+    @api_bp.arguments(SalonekCreateSchema(partial=True), location="form")
+    @api_bp.response(200, SalonekSchema)
+    def put(self, data, id_salonek):
+        obj = db.session.get(Salonek, id_salonek)
+        if not obj:
+            abort(404, message="Salonek nenalezen.")
+        file = request.files.get('obrazek')
+        if file:
+            filename = secure_filename(file.filename)
+            dest     = os.path.join(current_app.root_path, 'static', 'images')
+            os.makedirs(dest, exist_ok=True)
+            file.save(os.path.join(dest, filename))
+            obj.obrazek_filename = filename
+        for k, v in data.items():
+            setattr(obj, k, v)
+        db.session.commit()
+        return obj
+
+    @jwt_required()
+    @api_bp.response(204)
+    def delete(self, id_salonek):
+        obj = db.session.get(Salonek, id_salonek)
+        if not obj:
+            abort(404, message="Salonek nenalezen.")
+        db.session.delete(obj)
+        db.session.commit()
+        return ""
 
 # ──────────────────────────────────────────────────────────────────────────────
-# GET + POST /objednavky – seznam a vytvoření objednávky
+# PODNIKOVÁ AKCE endpoints (s obrázkem)
+# ──────────────────────────────────────────────────────────────────────────────
+@api_bp.route("/akce")
+class AkceList(MethodView):
+    @jwt_required()
+    @api_bp.response(200, PodnikovaAkceSchema(many=True))
+    def get(self):
+        return db.session.scalars(db.select(PodnikovaAkce)).all()
+
+    @jwt_required()
+    @api_bp.arguments(PodnikovaAkceCreateSchema, location="form")
+    @api_bp.response(201, PodnikovaAkceSchema)
+    def post(self, new_data):
+        file = request.files.get('obrazek')
+        obj  = PodnikovaAkce(**new_data)
+        if file:
+            filename = secure_filename(file.filename)
+            dest     = os.path.join(current_app.root_path, 'static', 'images')
+            os.makedirs(dest, exist_ok=True)
+            file.save(os.path.join(dest, filename))
+            obj.obrazek_filename = filename
+        roles = set(get_jwt().get("roles", []))
+        if not roles.intersection({"staff","admin"}):
+            abort(403, message="Nemáte oprávnění vytvářet akce.")
+        try:
+            db.session.add(obj)
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            abort(409, message="Duplicitní nebo neplatný záznam.")
+        return obj
+
+@api_bp.route("/akce/<int:id_akce>")
+class AkceItem(MethodView):
+    @jwt_required()
+    @api_bp.response(200, PodnikovaAkceSchema)
+    def get(self, id_akce):
+        obj = db.session.get(PodnikovaAkce, id_akce)
+        if not obj:
+            abort(404, message="Akce nenalezena.")
+        return obj
+
+    @jwt_required()
+    @api_bp.arguments(PodnikovaAkceCreateSchema(partial=True), location="form")
+    @api_bp.response(200, PodnikovaAkceSchema)
+    def put(self, data, id_akce):
+        obj = db.session.get(PodnikovaAkce, id_akce)
+        if not obj:
+            abort(404, message="Akce nenalezena.")
+        file = request.files.get('obrazek')
+        if file:
+            filename = secure_filename(file.filename)
+            dest     = os.path.join(current_app.root_path, 'static', 'images')
+            os.makedirs(dest, exist_ok=True)
+            file.save(os.path.join(dest, filename))
+            obj.obrazek_filename = filename
+        for k, v in data.items():
+            setattr(obj, k, v)
+        db.session.commit()
+        return obj
+
+    @jwt_required()
+    @api_bp.response(204)
+    def delete(self, id_akce):
+        obj = db.session.get(PodnikovaAkce, id_akce)
+        if not obj:
+            abort(404, message="Akce nenalezena.")
+        db.session.delete(obj)
+        db.session.commit()
+        return ""
+
+# ──────────────────────────────────────────────────────────────────────────────
+# WORKSHOP endpoints (s obrázkem)
+# ──────────────────────────────────────────────────────────────────────────────
+@api_bp.route("/workshops")
+class WorkshopList(MethodView):
+    @jwt_required()
+    @api_bp.response(200, WorkshopSchema(many=True))
+    def get(self):
+        return db.session.scalars(db.select(Workshop)).all()
+
+    @jwt_required()
+    @api_bp.arguments(WorkshopCreateSchema, location="form")
+    @api_bp.response(201, WorkshopSchema)
+    def post(self, new_data):
+        file = request.files.get('obrazek')
+        obj  = Workshop(**new_data)
+        if file:
+            filename = secure_filename(file.filename)
+            dest     = os.path.join(current_app.root_path, 'static', 'images')
+            os.makedirs(dest, exist_ok=True)
+            file.save(os.path.join(dest, filename))
+            obj.obrazek_filename = filename
+        roles = set(get_jwt().get("roles", []))
+        if not roles.intersection({"staff","admin"}):
+            abort(403, message="Nemáte oprávnění vytvářet workshopy.")
+        try:
+            db.session.add(obj)
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            abort(409, message="Duplicitní nebo neplatný záznam.")
+        return obj
+
+@api_bp.route("/workshops/<int:id_workshop>")
+class WorkshopItem(MethodView):
+    @jwt_required()
+    @api_bp.response(200, WorkshopSchema)
+    def get(self, id_workshop):
+        obj = db.session.get(Workshop, id_workshop)
+        if not obj:
+            abort(404, message="Workshop nenalezen.")
+        return obj
+
+    @jwt_required()
+    @api_bp.arguments(WorkshopCreateSchema(partial=True), location="form")
+    @api_bp.response(200, WorkshopSchema)
+    def put(self, data, id_workshop):
+        obj = db.session.get(Workshop, id_workshop)
+        if not obj:
+            abort(404, message="Workshop nenalezen.")
+        file = request.files.get('obrazek')
+        if file:
+            filename = secure_filename(file.filename)
+            dest     = os.path.join(current_app.root_path, 'static', 'images')
+            os.makedirs(dest, exist_ok=True)
+            file.save(os.path.join(dest, filename))
+            obj.obrazek_filename = filename
+        for k, v in data.items():
+            setattr(obj, k, v)
+        db.session.commit()
+        return obj
+
+    @jwt_required()
+    @api_bp.response(204)
+    def delete(self, id_workshop):
+        obj = db.session.get(Workshop, id_workshop)
+        if not obj:
+            abort(404, message="Workshop nenalezen.")
+        db.session.delete(obj)
+        db.session.commit()
+        return ""
+
+# ──────────────────────────────────────────────────────────────────────────────
+# OBJEDNAVKY endpoints
 # ──────────────────────────────────────────────────────────────────────────────
 @api_bp.route("/objednavky")
 class ObjednavkyResource(MethodView):
-
     @jwt_required()
     @api_bp.response(200, ObjednavkaSchema(many=True))
     def get(self):
         user_id = int(get_jwt_identity())
         roles   = set(get_jwt().get("roles", []))
-
-        if roles.intersection({"staff", "admin"}):
+        if roles.intersection({"staff","admin"}):
             objednavky = db.session.scalars(db.select(Objednavka)).all()
         else:
             objednavky = db.session.scalars(
-                db.select(Objednavka)
-                  .where(Objednavka.id_zakaznika == user_id)
+                db.select(Objednavka).where(Objednavka.id_zakaznika == user_id)
             ).all()
 
         now    = datetime.utcnow()
         result = []
-
         for o in objednavky:
             paid = db.session.query(Platba).filter_by(id_objednavky=o.id_objednavky).first()
             stav = (
-                "Čeká na platbu"
-                if not paid else
+                "Čeká na platbu" if not paid else
                 ("Ve zpracování" if (o.cas_pripravy and now < o.cas_pripravy) else "Hotovo")
             )
             result.append({
@@ -267,7 +492,6 @@ class ObjednavkyResource(MethodView):
                 "body_ziskane":   o.body_ziskane,
                 "cas_pripravy":   o.cas_pripravy.isoformat() if o.cas_pripravy else None
             })
-
         return jsonify(result), 200
 
     @jwt_required()
@@ -278,8 +502,7 @@ class ObjednavkyResource(MethodView):
         items          = order_data["items"]
         apply_discount = order_data.get("apply_discount", False)
 
-        # načtení menu položek
-        menu_ids   = [it["id_menu_polozka"] for it in items]
+        menu_ids = [it["id_menu_polozka"] for it in items]
         menu_items = {
             m.id_menu_polozka: m
             for m in db.session.query(PolozkaMenu)
@@ -289,7 +512,6 @@ class ObjednavkyResource(MethodView):
         if len(menu_items) != len(menu_ids):
             abort(404, message="Některá položka nebyla nalezena.")
 
-        # výpočet ceny, bodů a času
         total_price    = 0.0
         total_points   = 0
         max_prep_time  = 0
@@ -305,7 +527,6 @@ class ObjednavkyResource(MethodView):
 
         prep_minutes = max_prep_time * max_prep_count if max_prep_time and max_prep_count else 0
 
-        # vernostní účet
         account = (db.session.query(VernostniUcet)
                          .filter_by(id_zakaznika=user_id)
                          .with_for_update()
@@ -315,7 +536,6 @@ class ObjednavkyResource(MethodView):
             db.session.add(account)
             db.session.flush()
 
-        # sleva
         discount_amount = 0
         if apply_discount and account.body >= 400:
             discount_amount = 200
@@ -330,7 +550,6 @@ class ObjednavkyResource(MethodView):
         db.session.add(objednavka)
         db.session.flush()
 
-        # položky objednávky
         for it in items:
             polo = menu_items[it["id_menu_polozka"]]
             pi   = PolozkaObjednavky(
@@ -341,13 +560,11 @@ class ObjednavkyResource(MethodView):
             )
             db.session.add(pi)
 
-        # přičtení bodů
         if not apply_discount:
             account.body += total_points
         db.session.add(account)
         db.session.commit()
 
-        # notifikace
         notif = Notifikace(
             typ="OBJEDNAVKA_VYTVOŘENA",
             datum_cas=datetime.utcnow(),
@@ -359,7 +576,6 @@ class ObjednavkyResource(MethodView):
         db.session.commit()
 
         return objednavka
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # MENU endpoints
@@ -378,15 +594,15 @@ class PolozkaMenuList(MethodView):
     @api_bp.response(201, PolozkaMenuSchema)
     def post(self, new_data):
         file = request.files.get('obrazek')
-        obj = PolozkaMenu(**new_data)
+        obj  = PolozkaMenu(**new_data)
         if file:
             filename = secure_filename(file.filename)
-            dest = os.path.join(current_app.root_path, 'static', 'images')
+            dest     = os.path.join(current_app.root_path, 'static', 'images')
             os.makedirs(dest, exist_ok=True)
             file.save(os.path.join(dest, filename))
             obj.obrazek_filename = filename
         roles = set(get_jwt().get("roles", []))
-        if not roles.intersection({"staff", "admin"}):
+        if not roles.intersection({"staff","admin"}):
             abort(403, message="Nemáte oprávnění vytvářet položky menu.")
         try:
             db.session.add(obj)
@@ -419,12 +635,12 @@ class PolozkaMenuItem(MethodView):
         file = request.files.get('obrazek')
         if file:
             filename = secure_filename(file.filename)
-            dest = os.path.join(current_app.root_path, 'static', 'images')
+            dest     = os.path.join(current_app.root_path, 'static', 'images')
             os.makedirs(dest, exist_ok=True)
             file.save(os.path.join(dest, filename))
             obj.obrazek_filename = filename
         roles = set(get_jwt().get("roles", []))
-        if not roles.intersection({"staff", "admin"}):
+        if not roles.intersection({"staff","admin"}):
             abort(403, message="Nemáte oprávnění upravovat položky menu.")
         for k, v in data.items():
             setattr(obj, k, v)
@@ -435,7 +651,7 @@ class PolozkaMenuItem(MethodView):
     @api_bp.response(204)
     def delete(self, id_menu_polozka):
         roles = set(get_jwt().get("roles", []))
-        if not roles.intersection({"staff", "admin"}):
+        if not roles.intersection({"staff","admin"}):
             abort(403, message="Nemáte oprávnění mazat položky menu.")
         obj = db.session.get(PolozkaMenu, id_menu_polozka)
         if not obj:
@@ -443,7 +659,6 @@ class PolozkaMenuItem(MethodView):
         db.session.delete(obj)
         db.session.commit()
         return ""
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # MEAL-PLANS endpoints
@@ -454,10 +669,10 @@ class MealPlansList(MethodView):
     @api_bp.response(200, JidelniPlanSchema(many=True))
     def get(self):
         today = date.today()
-        stmt = (db.select(JidelniPlan)
-                  .where(JidelniPlan.platny_od <= today)
-                  .where((JidelniPlan.platny_do.is_(None)) |
-                         (JidelniPlan.platny_do >= today)))
+        stmt  = (db.select(JidelniPlan)
+                    .where(JidelniPlan.platny_od <= today)
+                    .where((JidelniPlan.platny_do.is_(None)) |
+                           (JidelniPlan.platny_do >= today)))
         return db.session.scalars(stmt).all()
 
 @api_bp.route("/meal-plans/<int:id_plan>")
@@ -470,7 +685,6 @@ class MealPlanItem(MethodView):
             abort(404, message="Jídelní plán nenalezen.")
         return plan
 
-
 # ──────────────────────────────────────────────────────────────────────────────
 # REZERVACE endpoints
 # ──────────────────────────────────────────────────────────────────────────────
@@ -482,8 +696,8 @@ class RezervaceList(MethodView):
         current_id = int(get_jwt_identity())
         roles      = set(get_jwt().get("roles", []))
         stmt = (db.select(Rezervace)
-                    if roles.intersection({"staff", "admin"})
-                    else db.select(Rezervace).where(Rezervace.id_zakaznika == current_id))
+                if roles.intersection({"staff","admin"})
+                else db.select(Rezervace).where(Rezervace.id_zakaznika == current_id))
         return db.session.scalars(stmt).all()
 
     @jwt_required()
@@ -492,6 +706,31 @@ class RezervaceList(MethodView):
     def post(self, new_data):
         current_id = int(get_jwt_identity())
         new_data["id_zakaznika"] = current_id
+
+        if new_data.get("id_stul"):
+            if not is_table_available(
+                new_data["id_stul"],
+                new_data["datum_cas"],
+                new_data["pocet_osob"]
+            ):
+                abort(409, message="Vybraný stůl není dostupný.")
+
+        if new_data.get("id_workshop"):
+            ws_id  = new_data["id_workshop"]
+            dt     = new_data["datum_cas"]
+            ppl    = new_data["pocet_osob"]
+            existing = db.session.query(
+                func.coalesce(func.sum(Rezervace.pocet_osob), 0)
+            ).filter_by(
+                id_workshop=ws_id,
+                datum_cas=dt
+            ).scalar()
+            workshop = db.session.get(Workshop, ws_id)
+            if not workshop:
+                abort(404, message="Workshop nenalezen.")
+            if existing + ppl > workshop.kapacita:
+                abort(409, message="Workshop nemá dostatečnou kapacitu.")
+
         rez = Rezervace(**new_data)
         try:
             db.session.add(rez)
@@ -499,6 +738,7 @@ class RezervaceList(MethodView):
         except IntegrityError:
             db.session.rollback()
             abort(409, message="Duplicitní nebo neplatný záznam.")
+
         notif = Notifikace(
             typ="REZERVACE_VYTVOŘENA",
             datum_cas=datetime.utcnow(),
@@ -538,9 +778,56 @@ class RezervaceItem(MethodView):
         db.session.commit()
         return ""
 
+# ──────────────────────────────────────────────────────────────────────────────
+# PLATBA endpoint
+# ──────────────────────────────────────────────────────────────────────────────
+@api_bp.route("/platba", methods=["POST"])
+@jwt_required()
+@api_bp.arguments(PlatbaCreateSchema, location="json")
+@api_bp.response(201, PlatbaSchema)
+def create_platba_with_points(args):
+    raw    = args["datum"]
+    dt     = raw if isinstance(raw, datetime) else datetime.fromisoformat(raw)
+    platba = Platba(
+        castka=args["castka"],
+        typ_platby=args["typ_platby"],
+        datum=dt,
+        id_objednavky=args["id_objednavky"]
+    )
+    db.session.add(platba)
+    db.session.flush()
+    zprava = f"Platba #{platba.id_platba} za {args['castka']} Kč úspěšná."
+    objed  = db.session.get(Objednavka, platba.id_objednavky)
+    note   = Notifikace(
+        typ="PLATBA",
+        datum_cas=datetime.utcnow(),
+        text=zprava,
+        id_objednavky=platba.id_platba,
+        id_zakaznika = objed.id_zakaznika
+    )
+    db.session.add(note)
+    db.session.commit()
+    return platba
 
 # ──────────────────────────────────────────────────────────────────────────────
-# USERS/me/points endpoint
+# NOTIFICATIONS endpoints
+# ──────────────────────────────────────────────────────────────────────────────
+@api_bp.route("/users/me/notifications")
+class MyNotifications(MethodView):
+    @jwt_required()
+    @api_bp.response(200, NotifikaceSchema(many=True))
+    def get(self):
+        zak_id = int(get_jwt_identity())
+        notifs = (
+            db.session.query(Notifikace)
+              .filter_by(id_zakaznika=zak_id)
+              .order_by(Notifikace.datum_cas.desc())
+              .all()
+        )
+        return notifs
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ME/POINTS endpoint
 # ──────────────────────────────────────────────────────────────────────────────
 @api_bp.route("/users/me/points")
 class MyPoints(MethodView):
@@ -553,9 +840,8 @@ class MyPoints(MethodView):
             abort(404, message="Účet nenalezen.")
         return ucet
 
-
 # ──────────────────────────────────────────────────────────────────────────────
-# USERS/me/redeem endpoint
+# ME/REDEEM endpoint
 # ──────────────────────────────────────────────────────────────────────────────
 @api_bp.route("/users/me/redeem")
 class RedeemPoints(MethodView):
@@ -581,51 +867,3 @@ class RedeemPoints(MethodView):
         db.session.add(ucet)
         db.session.commit()
         return ucet
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# POST /platba – ukládá platbu a vytváří notifikaci
-# ──────────────────────────────────────────────────────────────────────────────
-@api_bp.route("/platba", methods=["POST"])
-@jwt_required()
-@api_bp.arguments(PlatbaCreateSchema, location="json")
-@api_bp.response(201, PlatbaSchema)
-def create_platba_with_points(args):
-    raw = args["datum"]
-    dt  = raw if isinstance(raw, datetime) else datetime.fromisoformat(raw)
-    platba = Platba(
-        castka=args["castka"],
-        typ_platby=args["typ_platby"],
-        datum=dt,
-        id_objednavky=args["id_objednavky"]
-    )
-    db.session.add(platba)
-    db.session.flush()
-    zprava = f"Platba #{platba.id_platba} za {args['castka']} Kč úspěšná."
-    objed  = db.session.get(Objednavka, platba.id_objednavky)
-    note   = Notifikace(
-        typ="PLATBA",
-        datum_cas=datetime.utcnow(),
-        text=zprava,
-        id_objednavky=platba.id_platba,
-        id_zakaznika=objed.id_zakaznika
-    )
-    db.session.add(note)
-    db.session.commit()
-    return platba
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# USERS/me/notifications endpoint
-# ──────────────────────────────────────────────────────────────────────────────
-@api_bp.route("/users/me/notifications")
-class MyNotifications(MethodView):
-    @jwt_required()
-    @api_bp.response(200, NotifikaceSchema(many=True))
-    def get(self):
-        zak_id = int(get_jwt_identity())
-        notifs = (db.session.query(Notifikace)
-                     .filter_by(id_zakaznika=zak_id)
-                     .order_by(Notifikace.datum_cas.desc())
-                     .all())
-        return notifs
