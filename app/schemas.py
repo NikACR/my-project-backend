@@ -1,3 +1,5 @@
+# src/schemas.py
+
 from marshmallow import Schema, fields, validate, validates_schema, ValidationError, post_dump
 from datetime import date
 from flask import url_for
@@ -194,7 +196,8 @@ class SalonekSchema(Schema):
     def get_image_url(self, obj):
         if not obj.obrazek_filename:
             return None
-        return url_for('static', filename=f'images/{obj.obrazek_filename}', _external=True)
+        # ← RELATIVNÍ cesta, stejná jako u položek menu
+        return url_for('static', filename=f'images/{obj.obrazek_filename}')
 
 class SalonekCreateSchema(Schema):
     nazev    = fields.Str(required=True)
@@ -217,7 +220,8 @@ class PodnikovaAkceSchema(Schema):
     def get_image_url(self, obj):
         if not obj.obrazek_filename:
             return None
-        return url_for('static', filename=f'images/{obj.obrazek_filename}', _external=True)
+        # ← RELATIVNÍ cesta, stejná jako u položek menu
+        return url_for('static', filename=f'images/{obj.obrazek_filename}')
 
 class PodnikovaAkceCreateSchema(Schema):
     nazev     = fields.Str(required=True)
@@ -242,7 +246,8 @@ class WorkshopSchema(Schema):
     def get_image_url(self, obj):
         if not obj.obrazek_filename:
             return None
-        return url_for('static', filename=f'images/{obj.obrazek_filename}', _external=True)
+        # ← RELATIVNÍ cesta, stejná jako u položek menu
+        return url_for('static', filename=f'images/{obj.obrazek_filename}')
 
 class WorkshopCreateSchema(Schema):
     nazev      = fields.Str(required=True)
@@ -324,6 +329,7 @@ class PolozkaMenuSchema(Schema):
     def get_obrazek_url(self, obj: PolozkaMenu):
         if not obj.obrazek_filename:
             return None
+        # u položek menu _external=True zůstává, protože tam to funguje
         return url_for('static', filename=f'images/{obj.obrazek_filename}', _external=True)
 
     def get_alergeny(self, obj):
@@ -338,10 +344,10 @@ class PolozkaMenuCreateSchema(Schema):
     cena            = fields.Decimal(as_string=True, required=True)
     kategorie       = fields.Str(required=True, validate=validate.OneOf(["týdenní","víkendové","stálá nabídka"]))
     den             = fields.Str(
-                        allow_none=True,
-                        validate=validate.OneOf([
-                            "Pondělí","Úterý","Středa","Čtvrtek","Pátek","Sobota","Neděle", None
-                        ])
+                         allow_none=True,
+                         validate=validate.OneOf([
+                             "Pondělí","Úterý","Středa","Čtvrtek","Pátek","Sobota","Neděle", None
+                         ])
                      )
 # obrázek se opět bere v route z request.files['obrazek']
 

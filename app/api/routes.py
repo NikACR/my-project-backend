@@ -237,7 +237,6 @@ def register_crud(
 for base, model, sc, cc, pk in [
     ('ucet',      VernostniUcet,       VernostniUcetSchema,      VernostniUcetCreateSchema,      'id_ucet'),
     ('stul',      Stul,                 StulSchema,                StulCreateSchema,                'id_stul'),
-    # salonek, akce, workshop registrujeme zvlášť níže kvůli obrázkům
     ('menu',      PolozkaMenu,          PolozkaMenuSchema,         PolozkaMenuCreateSchema,         'id_menu_polozka'),
     ('alergen',   Alergen,              AlergenSchema,             AlergenCreateSchema,             'id_alergenu'),
     ('meal-plans',JidelniPlan,          JidelniPlanSchema,         JidelniPlanCreateSchema,         'id_plan'),
@@ -428,7 +427,7 @@ class WorkshopItem(MethodView):
     def get(self, id_workshop):
         obj = db.session.get(Workshop, id_workshop)
         if not obj:
-            abort(404, message="Workshop nenalezen.")
+            abort(404, message="Workshop nenalezena.")
         return obj
 
     @jwt_required()
@@ -437,7 +436,7 @@ class WorkshopItem(MethodView):
     def put(self, data, id_workshop):
         obj = db.session.get(Workshop, id_workshop)
         if not obj:
-            abort(404, message="Workshop nenalezen.")
+            abort(404, message="Workshop nenalezena.")
         file = request.files.get('obrazek')
         if file:
             filename = secure_filename(file.filename)
@@ -455,7 +454,7 @@ class WorkshopItem(MethodView):
     def delete(self, id_workshop):
         obj = db.session.get(Workshop, id_workshop)
         if not obj:
-            abort(404, message="Workshop nenalezen.")
+            abort(404, message="Workshop nenalezena.")
         db.session.delete(obj)
         db.session.commit()
         return ""
@@ -584,9 +583,13 @@ class ObjednavkyResource(MethodView):
 class PolozkaMenuList(MethodView):
     @api_bp.response(200, PolozkaMenuSchema(many=True))
     def get(self):
-        stmt = (db.select(PolozkaMenu)
-                  .options(selectinload(PolozkaMenu.alergeny)
-                           .selectinload(PolozkaMenuAlergen.alergen)))
+        stmt = (
+            db.select(PolozkaMenu)
+              .options(
+                selectinload(PolozkaMenu.alergeny)
+                  .selectinload(PolozkaMenuAlergen.alergen)
+              )
+        )
         return db.session.scalars(stmt).all()
 
     @jwt_required()
@@ -616,10 +619,14 @@ class PolozkaMenuList(MethodView):
 class PolozkaMenuItem(MethodView):
     @api_bp.response(200, PolozkaMenuSchema)
     def get(self, id_menu_polozka):
-        stmt = (db.select(PolozkaMenu)
-                  .options(selectinload(PolozkaMenu.alergeny)
-                           .selectinload(PolozkaMenuAlergen.alergen))
-                  .where(PolozkaMenu.id_menu_polozka == id_menu_polozka))
+        stmt = (
+            db.select(PolozkaMenu)
+              .options(
+                selectinload(PolozkaMenu.alergeny)
+                  .selectinload(PolozkaMenuAlergen.alergen)
+              )
+              .where(PolozkaMenu.id_menu_polozka == id_menu_polozka)
+        )
         obj = db.session.scalars(stmt).first()
         if not obj:
             abort(404, message="Položka menu nenalezena.")
@@ -669,10 +676,11 @@ class MealPlansList(MethodView):
     @api_bp.response(200, JidelniPlanSchema(many=True))
     def get(self):
         today = date.today()
-        stmt  = (db.select(JidelniPlan)
-                    .where(JidelniPlan.platny_od <= today)
-                    .where((JidelniPlan.platny_do.is_(None)) |
-                           (JidelniPlan.platny_do >= today)))
+        stmt  = (
+            db.select(JidelniPlan)
+              .where(JidelniPlan.platny_od <= today)
+              .where((JidelniPlan.platny_do.is_(None)) | (JidelniPlan.platny_do >= today))
+        )
         return db.session.scalars(stmt).all()
 
 @api_bp.route("/meal-plans/<int:id_plan>")
@@ -695,18 +703,30 @@ class RezervaceList(MethodView):
     def get(self):
         current_id = int(get_jwt_identity())
         roles      = set(get_jwt().get("roles", []))
-        stmt = (db.select(Rezervace)
-                if roles.intersection({"staff","admin"})
-                else db.select(Rezervace).where(Rezervace.id_zakaznika == current_id))
+        base_stmt = (
+            db.select(Rezervace)
+            if roles.intersection({"staff","admin"})
+            else db.select(Rezervace).where(Rezervace.id_zakaznika == current_id)
+        )
+        # pagination
+        page     = request.args.get("page", 1, type=int)
+        per_page = request.args.get("per_page", 20, type=int)
+        stmt = base_stmt.limit(per_page).offset((page - 1) * per_page)
         return db.session.scalars(stmt).all()
 
     @jwt_required()
     @api_bp.arguments(RezervaceCreateSchema)
     @api_bp.response(201, RezervaceSchema)
     def post(self, new_data):
+        # 1) Validace: jen budoucí datum
+        now = datetime.utcnow()
+        if new_data["datum_cas"] <= now:
+            abort(400, message="Rezervace musí být v budoucnosti.")
+
         current_id = int(get_jwt_identity())
         new_data["id_zakaznika"] = current_id
 
+        # Kontrola dostupnosti stolu
         if new_data.get("id_stul"):
             if not is_table_available(
                 new_data["id_stul"],
@@ -715,6 +735,7 @@ class RezervaceList(MethodView):
             ):
                 abort(409, message="Vybraný stůl není dostupný.")
 
+        # Kontrola dostupnosti workshopu
         if new_data.get("id_workshop"):
             ws_id  = new_data["id_workshop"]
             dt     = new_data["datum_cas"]
@@ -730,6 +751,40 @@ class RezervaceList(MethodView):
                 abort(404, message="Workshop nenalezen.")
             if existing + ppl > workshop.kapacita:
                 abort(409, message="Workshop nemá dostatečnou kapacitu.")
+
+        # Kontrola dostupnosti salonku
+        if new_data.get("id_salonek"):
+            sal_id = new_data["id_salonek"]
+            dt     = new_data["datum_cas"]
+            ppl    = new_data["pocet_osob"]
+            existing = db.session.query(
+                func.coalesce(func.sum(Rezervace.pocet_osob), 0)
+            ).filter_by(
+                id_salonek=sal_id,
+                datum_cas=dt
+            ).scalar()
+            salonek = db.session.get(Salonek, sal_id)
+            if not salonek:
+                abort(404, message="Salonek nenalezen.")
+            if existing + ppl > salonek.kapacita:
+                abort(409, message="Salonek nemá dostatečnou kapacitu.")
+
+        # Kontrola dostupnosti firemní akce
+        if new_data.get("id_akce"):
+            ak_id = new_data["id_akce"]
+            dt    = new_data["datum_cas"]
+            ppl   = new_data["pocet_osob"]
+            existing = db.session.query(
+                func.coalesce(func.sum(Rezervace.pocet_osob), 0)
+            ).filter_by(
+                id_akce=ak_id,
+                datum_cas=dt
+            ).scalar()
+            akce = db.session.get(PodnikovaAkce, ak_id)
+            if not akce:
+                abort(404, message="Akce nenalezena.")
+            if existing + ppl > akce.kapacita:
+                abort(409, message="Akce nemá dostatečnou kapacitu.")
 
         rez = Rezervace(**new_data)
         try:
