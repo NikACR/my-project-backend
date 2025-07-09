@@ -135,6 +135,4 @@ tests/	Pytest testy zahrnující CRUD operace pro /api/zakaznik
 Dockerfile	Definice Docker image pro backend, nastavení prostředí
 requirements.txt	Přesný seznam Python balíčků s verzemi
 
-________________________________________
 
->>>>>>> fe165ec (Initial commit – back-end)
